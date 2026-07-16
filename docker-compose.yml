@@ -1,0 +1,16 @@
+services:
+  db:
+    build: ./db
+    container_name: law_assistant_db
+    ports:
+      - "${POSTGRES_PORT}:${POSTGRES_PORT}"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DATABASE}
+    # volumes:
+    #   - postgres_data:/var/lib/postgresql/data
+    restart: always
+
+# volumes:
+#   postgres_data:
