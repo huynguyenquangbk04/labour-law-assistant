@@ -30,15 +30,15 @@ async def chat(request: ChatRequest): # currently have not considered history in
     if not request.stream: 
         try: 
             if request.comparison_mode: 
-                naive_response = await rag.aquery(full_query, query=QueryParam(mode="naive"))
-                hybrid_response = await rag.aquery(full_query, query=QueryParam(mode="hybrid"))
+                naive_response = await rag.aquery(full_query, param=QueryParam(mode="naive"))
+                hybrid_response = await rag.aquery(full_query, param=QueryParam(mode="hybrid"))
                 # can improve by using create_task()
                 return ComparisonResponse(
                     naive=ChatResponse(response=naive_response, mode="naive"),
                     hybrid=ChatResponse(response=hybrid_response, mode="hybrid")
                 )
             
-            hybrid_response = await rag.aquery(full_query, query=QueryParam(mode="hybrid"))
+            hybrid_response = await rag.aquery(full_query, param=QueryParam(mode="hybrid"))
             return ChatResponse(response=hybrid_response, mode="hybrid")
         except Exception as e: 
             raise HTTPException(status_code=500, detail=str(e))
@@ -64,8 +64,8 @@ async def chat(request: ChatRequest): # currently have not considered history in
                         await queue.put(f"data: {json.dumps({'type': 'error', 'mode': mode, 'message': str(e)})}\n\n")
 
                 # Use create_task() to create underground tasks, serving parallelism 
-                t1 = asyncio.create_task(stream_wrapper(rag.aquery(full_query, QueryParam(mode="naive", stream=True)), mode="naive"))
-                t2 = asyncio.create_task(stream_wrapper(rag.aquery(full_query, QueryParam(mode="hybrid", stream=True)), mode="hybrid"))
+                t1 = asyncio.create_task(stream_wrapper(rag.aquery(full_query, param=QueryParam(mode="naive", stream=True)), mode="naive"))
+                t2 = asyncio.create_task(stream_wrapper(rag.aquery(full_query, param=QueryParam(mode="hybrid", stream=True)), mode="hybrid"))
                 pending_tasks.update([t1, t2])
 
                 while pending_tasks: 
@@ -81,7 +81,7 @@ async def chat(request: ChatRequest): # currently have not considered history in
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
             
             else: 
-                response = await rag.aquery(full_query, QueryParam(mode="hybrid", stream=True))
+                response = await rag.aquery(full_query, param=QueryParam(mode="hybrid", stream=True))
 
                 if hasattr(response, "__aiter__"): # check if reponse is a generator, normally when streaming, LightRAG should returns a generator
                     async for chunk in response: 
