@@ -2,11 +2,11 @@ import os
 import json
 import asyncio
 import shutil
+import docx
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
 from lightrag import QueryParam
 from backend.core.rag_engine import RAGEngine
-from backend.core.llm_services import parse_pdf
 from backend.api.schemas import ChatRequest, ChatResponse, ComparisonResponse, UploadFileResponse
 from backend.config import settings
 
@@ -137,27 +137,27 @@ async def list_documents():
 # File helps find the file in form-data sent from frontend, ... mean compulsory. This file is also in UploadFile type, which has attributes like filename, Content-Type besides the file content in binary itself  
 async def uplload_file(file: UploadFile = File(...)):
 
-    if not file.filename.endswith(".pdf") and not file.filename.endswith(".txt"):
-        raise HTTPException(status_code=400, detail="Only PDF and TXT files are supported")
+    if not file.filename.endswith(".docx"):
+        raise HTTPException(status_code=400, detail="Only DOCX files are supported")
     
     # save to disk
     os.makedirs(settings.LIGHTRAG_WORKING_DIR, exist_ok=True)
     file_path = os.path.join(settings.LIGHTRAG_WORKING_DIR, file.filename)
 
     with open(file_path, "wb") as buffer: 
-        shutil.copyfileobj(file.file, buffer) # copyfileobj() is more safe for heavy files than write(), the binary bytes then become .pdf or .txt file on disk
+        shutil.copyfileobj(file.file, buffer) # copyfileobj() is more safe for heavy files than write(), the binary bytes then become .docx file on disk
 
     # save to rag database
     try: 
         rag = RAGEngine.get_instance()
 
-        content = ""
-        if file.filename.endswith(".pdf"):
-            content = await parse_pdf(file_path=file_path)
-
-        else: # assume .txt
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as txt_file:
-                content = txt_file.read()
+        doc = docx.Document(file_path)
+        full_para = []
+        for para in doc.paragraphs:
+            if para.text.strip():
+                full_para.append(para.text)
+        
+        content = "\n".join(full_para)
 
         if not content.strip():
             raise ValueError("File is empty or no text could be extracted")

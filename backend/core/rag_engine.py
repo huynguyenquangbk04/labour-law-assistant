@@ -1,7 +1,7 @@
 import os
 from lightrag import LightRAG
 from lightrag.utils import EmbeddingFunc
-from backend.core.llm_services import QwenEmbeddingFunc, BGEEmbeddingFunc, llm_reasoning_func
+from backend.core.llm_services import EmbeddingFuncWrapper, llm_reasoning_func
 from backend.config import settings
 
 class RAGEngine: # Because intialize one LightRAG including connecting it with database is very heavy, we use class method in order to maitain only one LightRAG engine
@@ -10,7 +10,7 @@ class RAGEngine: # Because intialize one LightRAG including connecting it with d
     @classmethod
     async def initialize(cls):
         if cls._instance is None:
-            embedding_func = BGEEmbeddingFunc()
+            embedding_func = EmbeddingFuncWrapper()
 
             # install the database information into os system
             os.environ["POSTGRES_HOST"] = settings.POSTGRES_HOST
@@ -23,7 +23,8 @@ class RAGEngine: # Because intialize one LightRAG including connecting it with d
                 working_dir=settings.LIGHTRAG_WORKING_DIR,
                 llm_model_func=llm_reasoning_func,
                 embedding_func=EmbeddingFunc(
-                    embedding_dim=1536,
+                    # embedding_dim=1536, # Qwen
+                    embedding_dim=1024, # BGE
                     max_token_size=512,
                     func=embedding_func,
                     model_name=settings.EMBEDDING_MODEL

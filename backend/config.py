@@ -16,13 +16,13 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str = "postgres"
     POSTGRES_DATABASE: str = "law_assistant"
     
-    REDIS_URL: Optional[str] = None
+    # REDIS_URL: Optional[str] = None
     
-    OPENROUTER_API_KEY: Optional[str] = None
+    BASE_URL: Optional[str] = None
+    API_KEY: Optional[str] = None
     
     EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
     LLM_MODEL: str = "deepseek/deepseek-v3.2"
-    PDF_PARSE_MODEL: str = "qwen/qwen3-vl-235b-a22b-instruct"
     
     SUMMARY_LANGUAGE: str = "Vietnamese"
     ENTITY_TYPES: list[str] = [

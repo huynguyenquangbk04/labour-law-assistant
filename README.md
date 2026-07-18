@@ -8,3 +8,8 @@ Cài PostgreSQL:
 Running: 
 - Cho phép terminal đọc biến môi trường.
 - python -m backend.main.
+
+Ollama: 
+- Cài Ollama trên máy.
+- ollama pull bge-m3
+- ollama pull qwen2.5:3b

@@ -10,7 +10,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
     mode: str = "hybrid"
-    sources: Optional[list[dict[str, Any]]] # List of sources, each source is a dictionary (key = id, name,...) 
+    sources: Optional[list[dict[str, Any]]] = []# List of sources, each source is a dictionary (key = id, name,...) 
 
 class ComparisonResponse(BaseModel):
     naive: ChatResponse # mode = "naive"
