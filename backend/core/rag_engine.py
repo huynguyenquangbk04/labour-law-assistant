@@ -23,8 +23,7 @@ class RAGEngine: # Because intialize one LightRAG including connecting it with d
                 working_dir=settings.LIGHTRAG_WORKING_DIR,
                 llm_model_func=llm_reasoning_func,
                 embedding_func=EmbeddingFunc(
-                    # embedding_dim=1536, # Qwen
-                    embedding_dim=1024, # BGE
+                    embedding_dim=settings.EMBEDDING_DIM,
                     max_token_size=512,
                     func=embedding_func,
                     model_name=settings.EMBEDDING_MODEL

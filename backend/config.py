@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     API_KEY: Optional[str] = None
     
     EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
+    EMBEDDING_DIM: int = 1536
     LLM_MODEL: str = "deepseek/deepseek-v3.2"
     
     SUMMARY_LANGUAGE: str = "Vietnamese"
