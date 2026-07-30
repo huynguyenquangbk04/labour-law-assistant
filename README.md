@@ -13,3 +13,18 @@ Ollama:
 - Cài Ollama trên máy.
 - ollama pull bge-m3
 - ollama pull qwen2.5:3b
+
+Gemini: 
+- Sẽ thử nghiệm API của Google AI Studio xem có làm prototype thay thế Ollama được không.
+
+Thư viện: 
+- Do quá trình install và uninstall có nhiều thư viện dư thừa nên cần phải reset lại file venv, requirements.txt.
+
+Docker: 
+- Làm thế nào để bỏ các model Ollma và docker.
+- Postgres tự động lưu lại volumes nên phải docker compose down -v
+- Xóa các file __pycache__ khi muốn đổi model
+- Các tiến trình cha, con không được dẹp sạch sẽ khi dùng reload = True + python -m backend.main
+
+Graph: 
+- Xem graph đã tối ưu hóa chưa

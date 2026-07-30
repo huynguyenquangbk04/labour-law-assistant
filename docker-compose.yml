@@ -11,6 +11,33 @@ services:
     # volumes:
     #   - postgres_data:/var/lib/postgresql/data
     restart: always
+    
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app/backend
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DATABASE}
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DATABASE=${POSTGRES_DATABASE}
+      - BASE_URL=${BASE_URL}
+      - API_KEY=${API_KEY}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - EMBEDDING_DIM=${EMBEDDING_DIM}
+      - EMBEDDING_QUERY_SENTENCE=${EMBEDDING_QUERY_SENTENCE}
+      - LLM_MODEL=${LLM_MODEL}
+      - LIGHTRAG_WORKING_DIR=/app/backend/data
+      - SUMMARY_LANGUAGE=Vietnamese
+      - 'APP_ENTITY_TYPES=["Văn bản pháp luật", "Điều khoản", "Cơ quan ban hành", "Đối tượng áp dụng", "Hành vi vi phạm", "Hình thức xử phạt", "Thời hạn", "Khái niệm pháp lý"]'
+    depends_on:
+      - db
 
 # volumes:
 #   postgres_data:

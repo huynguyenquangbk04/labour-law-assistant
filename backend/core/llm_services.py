@@ -20,8 +20,7 @@ class EmbeddingFuncWrapper: # Using different embedding model instead of default
     
     def _get_prefix(self, is_query): 
         if is_query:
-            # return "Instruct: Given a legal query, retrieve relevant statutes...\nQuery: " # Specialized for Qwen (append an instruction if the text is a query, helps including efficiency)
-            return "Represent this sentence for searching relevant passages: " # BGE 
+            return settings.EMBEDDING_QUERY_SENTENCE # distinguish query text and information text 
         return ""
 
     async def __call__(self, texts: list[str]): # Callable class, using this design instead of only functions to better manage model_name and inner functions
