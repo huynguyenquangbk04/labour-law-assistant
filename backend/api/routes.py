@@ -1,97 +1,87 @@
 import os
 import json
-import asyncio
 import shutil
 import docx
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Request
 from fastapi.responses import StreamingResponse
-from lightrag import QueryParam
 from backend.core.rag_engine import RAGEngine
 from backend.api.schemas import ChatRequest, ChatResponse, ComparisonResponse, UploadFileResponse
 from backend.config import settings
 
-
 router = APIRouter()
 
+def get_agent(request: Request):
+    return request.app.state.agent
+
+thread_id = 1
+
 @router.post("/chat")
-async def chat(request: ChatRequest): # currently have not considered history in request and sources in responses
-    rag = RAGEngine.get_instance()
+async def chat(request: ChatRequest, agent=Depends(get_agent)): # currently have not considered history in request and sources in responses
 
-    print(f"DEBUG: Chat request received. message='{request.message[:20]}...', comparison_mode={request.comparison_mode}, stream={request.stream}")
+    print(f"DEBUG: Chat request received. message='{request.message[:20]}...', comparison_mode={request.comparison_mode}, critique={request.critique}")
 
-    system_prompt = (
-        "STRICT INSTRUCTION: Output ONLY the relevant information. "
-        "DO NOT use introductory phrases like 'Dựa trên thông tin được cung cấp...', 'Dưới đây là...', etc. "
-        "Directly provide the answer based on the context."
-    )
+    global thread_id    
+    thread = {"configurable": {"thread_id": thread_id}}
 
-    full_query = f"{request.message} \n\n {system_prompt}" 
+    input = {
+        "query": request.message,
+        "comparison_mode": request.comparison_mode,
+        "critique": request.critique,
+        "full_query": "",
+        "context": {},
+        "references": [],
+        "draft": {},
+        "reflect": {},
+        "should_modify": {},
+        "revision_number": 0,
+        "max_revisions": 3
+    }
 
-    if not request.stream: 
+    if request.critique: 
         try: 
+            response = await agent.graph.ainvoke(input=input, config=thread)
             if request.comparison_mode: 
-                naive_response = await rag.aquery(full_query, param=QueryParam(mode="naive"))
-                hybrid_response = await rag.aquery(full_query, param=QueryParam(mode="hybrid"))
-                # can improve by using create_task()
+                naive_response = response.get("naive_messages")[-1].content
+                hybrid_response = response.get("hybrid_messages")[-1].content
+
                 return ComparisonResponse(
                     naive=ChatResponse(response=naive_response, mode="naive"),
                     hybrid=ChatResponse(response=hybrid_response, mode="hybrid")
                 )
             
-            hybrid_response = await rag.aquery(full_query, param=QueryParam(mode="hybrid"))
+            hybrid_response = response.get("hybrid_messages")[-1].content       
             return ChatResponse(response=hybrid_response, mode="hybrid")
+        
         except Exception as e: 
             raise HTTPException(status_code=500, detail=str(e))
     
     async def event_generator(): # a generator to get the chunks from LightRAG streamming response(s) and yield them to chat function
         try:
-            if request.comparison_mode: 
-                queue = asyncio.Queue() # to handle the async chunks from both naive and hybrid responses
-                pending_tasks = set() # contains naive and hybrid response tasks, to track when those tasks done
+            if request.comparison_mode:
+                yield f"data: {json.dumps({'type': 'start', 'mode': 'naive'})}\n\n"
 
-                async def stream_wrapper(gen_func, mode): # chunk is put in SSE format, so that frontend can extract and handle later
-                    try: 
-                        await queue.put(f"data: {json.dumps({'type': 'start', 'mode': mode})}\n\n")
+            yield f"data: {json.dumps({'type': 'start', 'mode': 'hybrid'})}\n\n"
 
-                        response = await gen_func
+            async for event in agent.graph.astream_events(input=input, config=thread, version="v2"):
+                kind = event.get("event")
+                tags = event.get("tags", [])
 
-                        if hasattr(response, "__aiter__"): # check if reponse is a generator, normally when streaming, LightRAG should returns a generator
-                            async for chunk in response: 
-                                await queue.put(f"data: {json.dumps({'type': 'chunk', 'mode': mode, 'content': chunk})}\n\n")
-                    
-                    except Exception as e: 
-                        print(f"STREAM ERROR ({mode}): {str(e)}")
-                        await queue.put(f"data: {json.dumps({'type': 'error', 'mode': mode, 'message': str(e)})}\n\n")
+                if kind == "on_chat_model_stream": 
+                    chunk = event["data"]["chunk"].content
 
-                # Use create_task() to create underground tasks, serving parallelism 
-                t1 = asyncio.create_task(stream_wrapper(rag.aquery(full_query, param=QueryParam(mode="naive", stream=True)), mode="naive"))
-                t2 = asyncio.create_task(stream_wrapper(rag.aquery(full_query, param=QueryParam(mode="hybrid", stream=True)), mode="hybrid"))
-                pending_tasks.update([t1, t2])
+                    if not chunk:
+                        continue
 
-                while pending_tasks: 
-                    while not queue.empty():
-                        yield await queue.get()
-
-                    # instead of asking for empty queue continuously, which wastes CPU, make it sleep and give space to chunk-listening tasks themselves, only wake up after one completed or 0.1s 
-                    done, pending_tasks = await asyncio.wait(pending_tasks, timeout=0.1, return_when=asyncio.FIRST_COMPLETED) # if one reponse done, it will be moved from "pending_task" to "done" list
-
-                    while not queue.empty():
-                        yield await queue.get()
-
-                yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            
-            else: 
-                response = await rag.aquery(full_query, param=QueryParam(mode="hybrid", stream=True))
-
-                if hasattr(response, "__aiter__"): # check if reponse is a generator, normally when streaming, LightRAG should returns a generator
-                    async for chunk in response: 
-                        yield f"data: {json.dumps({'type': 'chunk', 'mode': 'hybrid', 'content': chunk})}\n\n"
+                    if "final" in tags: 
+                        if "naive" in tags: 
+                            yield f"data: {json.dumps({'type': 'chunk', 'mode': 'naive', 'content': chunk})}\n\n"
+                        elif "hybrid" in tags:
+                            yield f"data: {json.dumps({'type': 'chunk', 'mode': 'hybrid', 'content': chunk})}\n\n"
                 
-                yield f"data: {json.dumps({'type': 'done'})}\n\n"
-        
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"                   
+                                    
         except Exception as e: 
-              yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-        
+              yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"    
         
     return StreamingResponse(
         event_generator(), 

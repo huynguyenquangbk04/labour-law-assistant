@@ -4,7 +4,7 @@ from typing import Optional, Any
 class ChatRequest(BaseModel):
     message: str
     history: Optional[list[dict]] = []
-    stream: Optional[bool] = False
+    critique: Optional[bool] = False
     comparison_mode: Optional[bool] = False
 
 class ChatResponse(BaseModel):

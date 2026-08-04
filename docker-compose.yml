@@ -20,6 +20,8 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app/backend
+    env_file:
+      - ./.env
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DATABASE}
       - POSTGRES_HOST=db
@@ -29,6 +31,10 @@ services:
       - POSTGRES_DATABASE=${POSTGRES_DATABASE}
       - BASE_URL=${BASE_URL}
       - API_KEY=${API_KEY}
+      - OPENAI_API_KEY=${API_KEY}
+      - OPENAI_API_BASE=${BASE_URL}
+      - OPENAI_MODEL=${OPENAI_MODEL}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL}
       - EMBEDDING_DIM=${EMBEDDING_DIM}
       - EMBEDDING_QUERY_SENTENCE=${EMBEDDING_QUERY_SENTENCE}

@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     EMBEDDING_DIM: int = 1536
     EMBEDDING_QUERY_SENTENCE: str = "Instruct: Given a legal query, retrieve relevant statutes...\nQuery: "
     LLM_MODEL: str = "deepseek/deepseek-v3.2"
+
+    OPENAI_MODEL: str = "deepseek/deepseek-v3.2"
+    TAVILY_API_KEY: Optional[str] = None
     
     SUMMARY_LANGUAGE: str = "Vietnamese"
     APP_ENTITY_TYPES: list[str] = [

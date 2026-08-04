@@ -1,8 +1,6 @@
 import operator
 import asyncio
-import sqlite3
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_openai import ChatOpenAI
 from tavily import AsyncTavilyClient
@@ -13,10 +11,8 @@ from backend.config import settings
 from backend.core.rag_engine import RAGEngine
 from backend.core.prompts import SUMMARIZE_PROMPT, RESEARCH_PROMPT, DRAFT_PROMPT, REFLECT_PROMPT
 
-conn = sqlite3.connect("checkpoints.sqlite", check_same_thread=False)
-memory = SqliteSaver(conn)
-tavily = AsyncTavilyClient(api_key=settings.TAVILY_API_KEY)
-model = ChatOpenAI(model_name="gpt-4", temperature=0, streaming=True)
+tavily = AsyncTavilyClient()
+model = ChatOpenAI(model_name=settings.OPENAI_MODEL, temperature=0, streaming=True)
 
 class DualContent(TypedDict, total=False): 
     naive: str
@@ -297,7 +293,5 @@ class Agent:
             updated_state["naive_messages"] = [AIMessage(content=naive_text)]
             
         return updated_state
-
-agent = Agent(model, tavily, memory)
 
 

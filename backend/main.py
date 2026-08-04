@@ -3,11 +3,18 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend.api.routes import router as api_router
 from backend.core.rag_engine import RAGEngine
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from backend.core.graph import model, tavily, Agent
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await RAGEngine.initialize()
-    yield
+
+    async with AsyncSqliteSaver.from_conn_string("checkpoints.sqlite") as memory:
+        app.state.agent = Agent(model, tavily, memory)
+
+        yield # keep the memory alive for the entire lifespan
+
     # post logic
 
 app = FastAPI(
