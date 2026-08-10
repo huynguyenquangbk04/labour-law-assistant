@@ -39,5 +39,9 @@ dist/
 # Docker local data
 postgres_data/
 
+# Dependencies and local data
+node_modules/
+backend/data/
+
 # Jupyter notebooks checkpoints
 .ipynb_checkpoints/
