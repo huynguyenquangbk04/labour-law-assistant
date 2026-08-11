@@ -32,7 +32,8 @@ The system uses a stateful, iterative multi-agent workflow orchestrated by **Lan
 
 - **Vietnamese Legal QA:** Grounded answers for labour law regulations.
 - **Custom Knowledge Base:** Upload DOCX documents to dynamically expand the LightRAG store.
-- **Hybrid Retrieval Strategy:** Combines vector search with knowledge graph entity-relationship extraction.
+- **Flexible Retrieval Modes:** The architecture supports both Hybrid mode (Local + Global LightRAG) and NaiveRAG + Hybrid mode for comparison and evaluation.
+- **Choice of Reflection Strategy:** The system allows users to decide whether to enable reflection for higher accuracy or disable it for faster response time.
 - **Web Search Fallback:** Tavily integration to handle information gaps.
 - **Reflection Loop:** Multi-step verification mechanism to minimize hallucinations.
 
@@ -41,21 +42,18 @@ The system uses a stateful, iterative multi-agent workflow orchestrated by **Lan
 ## 4. Local Setup & Installation
 
 ### Prerequisites
-- Python 3.10+
-- PostgreSQL / Docker
+- Python 3.12
+- Docker
 - Node.js & npm
+
+### Environment Configuration
+Copy the example environment file and fill in your own values:
+
+Then update the values in [.env](.env) such as API keys, model names, and database settings.
 
 ### Backend Setup
 ```bash
-cd backend
-python -m venv venv
-source venv/bin/activate  # Linux/macOS
-# venv\Scripts\activate   # Windows
-pip install -r requirements.txt
-
-# Start PostgreSQL & Backend
 docker compose up -d
-python -m backend.main
 ```
 
 ### Frontend Setup
