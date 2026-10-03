@@ -12,6 +12,7 @@ interface Message {
   comparison?: {
     naive: { content: string; sources: any[] }
     hybrid: { content: string; sources: any[] }
+    drift: { content: string; sources: any[] }
   }
 }
 
@@ -48,7 +49,8 @@ export default function ChatInterface({ comparisonMode, critique }: { comparison
       content: '', 
       comparison: comparisonMode ? { 
         naive: { content: '', sources: [] }, 
-        hybrid: { content: '', sources: [] } 
+        hybrid: { content: '', sources: [] },
+        drift: { content: '', sources: [] }
       } : undefined
     }
     
@@ -72,12 +74,13 @@ export default function ChatInterface({ comparisonMode, critique }: { comparison
         setMessages(prev => prev.map(msg => {
           if (msg.id !== assistantMsgId) return msg
 
-          if (comparisonMode && data.naive && data.hybrid) {
+          if (comparisonMode && data.naive && data.hybrid && data.drift) {
             return {
               ...msg,
               comparison: {
                 naive: { content: data.naive.response, sources: data.naive.sources ?? [] },
-                hybrid: { content: data.hybrid.response, sources: data.hybrid.sources ?? [] }
+                hybrid: { content: data.hybrid.response, sources: data.hybrid.sources ?? [] },
+                drift: { content: data.drift.response, sources: data.drift.sources ?? [] }
               }
             }
           }
@@ -128,6 +131,11 @@ export default function ChatInterface({ comparisonMode, critique }: { comparison
                       }
                     } else {
                       newMsg.content = (newMsg.content || '') + data.content
+                    }
+                  } else if (data.mode === 'drift' && newMsg.comparison) {
+                    newMsg.comparison = {
+                      ...newMsg.comparison,
+                      drift: { ...newMsg.comparison.drift, content: newMsg.comparison.drift.content + data.content }
                     }
                   }
                   return newMsg
@@ -201,7 +209,7 @@ export default function ChatInterface({ comparisonMode, critique }: { comparison
               
               <div className="flex-1 space-y-4 min-w-0">
                 {msg.comparison ? (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     {/* Naive Response */}
                     <div className="space-y-4">
                       <div className="flex items-center gap-2 px-1">
@@ -211,6 +219,20 @@ export default function ChatInterface({ comparisonMode, critique }: { comparison
                       <div className="p-4 rounded-2xl bg-card border rounded-tl-none shadow-sm h-full overflow-hidden">
                         {msg.comparison.naive.content ? (
                           <MarkdownContent content={msg.comparison.naive.content} role="assistant" />
+                        ) : (
+                          <SkeletonResponse />
+                        )}
+                      </div>
+                    </div>
+                    {/* GraphRAG Drift Response */}
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-2 px-1">
+                        <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-widest bg-emerald-500/10 px-2 py-0.5 rounded">GraphRAG Drift</span>
+                        {isLoading && !msg.comparison.drift.content && <div className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />}
+                      </div>
+                      <div className="p-4 rounded-2xl border border-emerald-600/20 bg-emerald-500/[0.02] rounded-tl-none shadow-sm h-full overflow-hidden">
+                        {msg.comparison.drift.content ? (
+                          <MarkdownContent content={msg.comparison.drift.content} role="assistant" />
                         ) : (
                           <SkeletonResponse />
                         )}

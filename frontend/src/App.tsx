@@ -73,7 +73,7 @@ function App() {
               </div>
             </button>
             <p className="text-[10px] text-muted-foreground mt-2 px-1">
-              {comparisonMode ? "Comparing Naive vs Hybrid RAG responses." : "Standard Hybrid RAG retrieval active."}
+              {comparisonMode ? "Comparing Naive, Hybrid, and GraphRAG Drift responses." : "Standard Hybrid RAG retrieval active."}
             </p>
             <p className="text-[10px] text-muted-foreground mt-2 px-1">
               {critique ? "Critique enabled: non-streaming JSON response." : "Critique disabled: streaming response active."}
