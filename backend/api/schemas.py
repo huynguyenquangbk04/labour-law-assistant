@@ -15,6 +15,7 @@ class ChatResponse(BaseModel):
 class ComparisonResponse(BaseModel):
     naive: ChatResponse # mode = "naive"
     hybrid: ChatResponse
+    drift: ChatResponse
 
 class UploadFileResponse(BaseModel):
     filename: str

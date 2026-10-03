@@ -37,6 +37,7 @@ dist/
 
 # Docker local data
 postgres_data/
+checkpoints.sqlite
 
 # Dependencies and local data
 node_modules/
@@ -44,3 +45,10 @@ backend/data/
 
 # Jupyter notebooks checkpoints
 .ipynb_checkpoints/
+
+# GraphRAG and LightRAG caches/logs
+backend/core/graphrag_project/cache
+backend/core/graphrag_project/logs
+backend/core/graphrag_project/output
+backend/core/lightrag_project/*
+

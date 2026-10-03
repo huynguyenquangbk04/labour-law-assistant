@@ -1,0 +1,203 @@
+## Chưa setup để nó lấy động các giá trị trong .env
+
+### =========================================================================
+### Trỏ completion_models / embedding_models vào local proxy (localhost:8123)
+### thay vì OpenAI thật — proxy bên trong gọi llm_reasoning_func /
+### EmbeddingFuncWrapper.
+### =========================================================================
+
+
+### -------------------------------------------------------------------------
+### LLM settings — trỏ vào proxy, KHÔNG cần Protocol injection
+### -------------------------------------------------------------------------
+
+completion_models:
+  default_completion_model:
+    model_provider: openai
+    model: ${LLM_MODEL}                     # tên tuỳ ý — proxy không dùng field này để chọn model thật
+    auth_method: api_key
+    api_key: "not-needed"               # proxy nội bộ, không check key
+    api_base: "http://localhost:8123/v1"
+    retry:
+      type: exponential_backoff
+
+embedding_models:
+  default_embedding_model:
+    model_provider: openai
+    model: ${EMBEDDING_MODEL}       # phải khớp EMBEDDING_MODEL trong backend/.env, vì dù dùng proxy nhưng khác với completion model, embedding model còn được dùng để làm một số thứ khác: chunk, tạo database,... trước khi gọi tới proxy (nơi model thật dang chờ)
+    auth_method: api_key
+    api_key: "not-needed"
+    api_base: "http://localhost:8123/v1"
+    retry:
+      type: exponential_backoff
+
+
+### -------------------------------------------------------------------------
+### Input — dùng JSON đã prechunk theo Điều
+### -------------------------------------------------------------------------
+### File init mặc định để type: text (đọc nguyên file .txt, GraphRAG tự
+### chunking theo "chunking" bên dưới). File JSON cần là một mảng object,
+### mỗi object tương ứng với một Điều đã được prechunk.
+
+input:
+  type: json                             # đọc các bản ghi Điều từ file JSON
+  encoding: utf-8
+  text_column: text                     # trường chứa nội dung từng Điều
+  title_column: title                   # ví dụ "Điều 36 - BLLĐ 2019"
+  id_column: id                         # id duy nhất cho từng Điều
+
+
+### -------------------------------------------------------------------------
+### Chunking — CẦN SỬA size để GraphRAG không cắt tiếp các Điều dài
+### -------------------------------------------------------------------------
+### Vì input đã prechunked theo Điều, "size" chỉ có tác dụng như một "trần
+### an toàn": nếu 1 Điều nào đó dài hơn "size", GraphRAG SẼ cắt tiếp Điều
+### đó ra làm 2+ chunk — phá vỡ mục tiêu "1 chunk = 1 Điều trọn vẹn".
+### => Đo thử token của Điều dài nhất trong dữ liệu luật của bạn, set
+###    "size" CAO HƠN số đó (ví dụ Điều dài nhất ~1800 token thì set 2500).
+
+chunking:
+  type: tokens
+  size: 2500                            # SỬA theo Điều dài nhất thực tế trong bộ luật của bạn — xem cách đo bên dưới
+  overlap: 0                            # =0 vì mỗi chunk đã trọn 1 Điều, không cần overlap chồng lấn
+  encoding_model: o200k_base            # giữ nguyên mặc định, khớp tokenizer GraphRAG dùng nội bộ
+
+
+### -------------------------------------------------------------------------
+### Storage 
+### -------------------------------------------------------------------------
+
+input_storage:
+  type: file
+  base_dir: "input"                     # thư mục chứa input đã prechunk
+
+output_storage:
+  type: file
+  base_dir: "output"
+
+reporting:
+  type: file
+  base_dir: "logs"
+
+cache:
+  type: json
+  storage:
+    type: file
+    base_dir: "cache"
+
+vector_store:
+  type: lancedb
+  db_uri: output/lancedb
+  vector_size: ${EMBEDDING_DIM}
+
+
+### -------------------------------------------------------------------------
+### embed_text
+### -------------------------------------------------------------------------
+
+embed_text:
+  embedding_model_id: default_embedding_model
+
+
+### -------------------------------------------------------------------------
+### extract_graph — BẮT BUỘC SỬA entity_types để khớp với LightRAG
+### -------------------------------------------------------------------------
+
+extract_graph:
+  completion_model_id: default_completion_model
+  prompt: "prompts/extract_graph.txt"
+  entity_types: ${APP_ENTITY_TYPES}
+  max_gleanings: 1                      # giữ =1, khớp behavior với LightRAG, tránh lệch số lần gọi LLM
+
+
+### -------------------------------------------------------------------------
+### summarize_descriptions — không bắt buộc sửa, giữ mặc định init sinh ra
+### -------------------------------------------------------------------------
+
+summarize_descriptions:
+  completion_model_id: default_completion_model
+  prompt: "prompts/summarize_descriptions.txt"
+  max_length: 500
+
+
+### -------------------------------------------------------------------------
+### extract_graph_nlp — mặc định init sinh ra, KHÔNG dùng vì bạn dùng LLM
+### extraction (extract_graph ở trên), không phải NLP-only pipeline
+### -------------------------------------------------------------------------
+### Giữ nguyên field này (GraphRAG yêu cầu nó tồn tại trong config), nhưng
+### nó chỉ có tác dụng nếu bạn chuyển hẳn sang chế độ NLP-based extraction
+### (rẻ hơn, không cần LLM, nhưng kém chính xác hơn nhiều cho domain luật
+### có nhiều thuật ngữ chuyên ngành) — KHÔNG khuyến nghị cho use case này.
+
+extract_graph_nlp:
+  text_analyzer:
+    extractor_type: regex_english
+
+
+### -------------------------------------------------------------------------
+### cluster_graph — đây là bước KHÔNG có bên LightRAG (Leiden community detection)
+### -------------------------------------------------------------------------
+
+cluster_graph:
+  max_cluster_size: 10
+  seed: 42                              # cố định seed để kết quả tái lập được giữa các lần chạy thí nghiệm
+
+
+### -------------------------------------------------------------------------
+### extract_claims — tắt, giữ mặc định (LightRAG không có bước tương đương)
+### -------------------------------------------------------------------------
+
+extract_claims:
+  enabled: false
+  completion_model_id: default_completion_model
+  prompt: "prompts/extract_claims.txt"
+  description: "Any claims or facts that could be relevant to information discovery."
+  max_gleanings: 1
+
+
+### -------------------------------------------------------------------------
+### community_reports
+### -------------------------------------------------------------------------
+
+community_reports:
+  completion_model_id: default_completion_model
+  graph_prompt: "prompts/community_report_graph.txt"
+  text_prompt: "prompts/community_report_text.txt"
+  max_length: 2000
+  max_input_length: 8000
+
+
+### -------------------------------------------------------------------------
+### snapshots — bật graphml để bạn soi trực quan đồ thị trong giai đoạn thí nghiệm
+### -------------------------------------------------------------------------
+
+snapshots:
+  graphml: true          # bật tạm để debug/visualize, tắt lại (false) khi chạy production
+  embeddings: false
+
+
+### -------------------------------------------------------------------------
+### Query settings 
+### -------------------------------------------------------------------------
+
+local_search:
+  completion_model_id: default_completion_model
+  embedding_model_id: default_embedding_model
+  prompt: "prompts/local_search_system_prompt.txt"
+
+global_search:
+  completion_model_id: default_completion_model
+  map_prompt: "prompts/global_search_map_system_prompt.txt"
+  reduce_prompt: "prompts/global_search_reduce_system_prompt.txt"
+  knowledge_prompt: "prompts/global_search_knowledge_system_prompt.txt"
+
+drift_search:
+  completion_model_id: default_completion_model
+  embedding_model_id: default_embedding_model
+  prompt: "prompts/drift_search_system_prompt.txt"
+  reduce_prompt: "prompts/drift_reduce_prompt.txt"
+
+basic_search:
+  completion_model_id: default_completion_model
+  embedding_model_id: default_embedding_model
+  prompt: "prompts/basic_search_system_prompt.txt"

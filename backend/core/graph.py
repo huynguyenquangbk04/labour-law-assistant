@@ -2,6 +2,7 @@ import operator
 import asyncio
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain_core.callbacks.manager import adispatch_custom_event
 from langchain_openai import ChatOpenAI
 from tavily import AsyncTavilyClient
 from typing import TypedDict, Annotated
@@ -9,6 +10,7 @@ from pydantic import BaseModel, Field
 from lightrag import QueryParam
 from backend.config import settings
 from backend.core.rag_engine import RAGEngine
+from backend.core.graphrag_engine import GraphRAGEngine
 from backend.core.prompts import SUMMARIZE_PROMPT, RESEARCH_PROMPT, DRAFT_PROMPT, REFLECT_PROMPT
 
 tavily = AsyncTavilyClient()
@@ -17,10 +19,12 @@ model = ChatOpenAI(model_name=settings.OPENAI_MODEL, temperature=0, streaming=Tr
 class DualContent(TypedDict, total=False): 
     naive: str
     hybrid: str
+    drift: str
 
 class ModifyCheck(TypedDict, total=False): 
     naive: bool
     hybrid: bool
+    drift: bool
 
 class SearchQueries(BaseModel):
     search_queries: list[str] = Field(
@@ -52,6 +56,7 @@ class AgentState(TypedDict):
     critique: bool
     full_query: str
     context: DualContent
+    drift_response: str
     references: list[str]
     draft: DualContent
     reflect: DualContent
@@ -61,6 +66,7 @@ class AgentState(TypedDict):
     human_messages: Annotated[list[HumanMessage], operator.add]
     naive_messages: Annotated[list[AIMessage], operator.add]
     hybrid_messages: Annotated[list[AIMessage], operator.add]
+    drift_messages: Annotated[list[AIMessage], operator.add]
 
 class Agent: 
     def __init__(self, model, tavily, memory):
@@ -113,9 +119,14 @@ class Agent:
         else: 
             naive_task = rag.aquery(query=full_query, param=QueryParam(mode="naive", only_need_context=True))
             hybrid_task = rag.aquery(query=full_query, param=QueryParam(mode="hybrid", only_need_context=True))
-            naive_res, hybrid_res = await asyncio.gather(naive_task, hybrid_task)
+            drift_task = GraphRAGEngine.query(full_query, method="drift")
+            naive_res, hybrid_res, (drift_response, drift_context) = await asyncio.gather(
+                naive_task, hybrid_task, drift_task
+            )
             context_data["naive"] = naive_res
             context_data["hybrid"] = hybrid_res
+            context_data["drift"] = str(drift_context or "")
+            return {"context": context_data, "drift_response": str(drift_response or "")}
         return {"context": context_data}
 
     async def research_node(self, state: AgentState):
@@ -162,6 +173,7 @@ class Agent:
 
         if state.get("comparison_mode"): 
             tasks = {}
+            draft = dict(draft or {})
 
             if not reflect or should_mod.get("naive", False): 
                 naive_query = full_query + f"Context: {context.get('naive')}\n\n"
@@ -188,6 +200,30 @@ class Agent:
                     SystemMessage(content=DRAFT_PROMPT), 
                     HumanMessage(content=hybrid_query)
                 ], config=cfg_hybrid)
+
+            if not reflect or should_mod.get("drift", False):
+                if not reflect:
+                    drift_response = state.get("drift_response", "")
+                    draft["drift"] = drift_response
+                    if is_streaming_path and drift_response:
+                        for offset in range(0, len(drift_response), 120):
+                            await adispatch_custom_event(
+                                "comparison_chunk",
+                                {"mode": "drift", "content": drift_response[offset:offset + 120]},
+                            )
+                else:
+                    drift_query = (
+                        full_query
+                        + f"Context: {context.get('drift')}\n"
+                        + f"Initial GraphRAG Drift response: {state.get('drift_response', '')}\n"
+                        + f"Previous Draft: {draft.get('drift', '')}\n"
+                        + f"Feedback: {reflect.get('drift', '')}\n\n"
+                    )
+                    cfg_drift = {"tags": ["final", "drift"]} if is_streaming_path else {}
+                    tasks["drift"] = self.model.ainvoke([
+                        SystemMessage(content=DRAFT_PROMPT),
+                        HumanMessage(content=drift_query)
+                    ], config=cfg_drift)
 
             if tasks:
                 results = await asyncio.gather(*tasks.values())
@@ -229,6 +265,12 @@ class Agent:
         if state.get("comparison_mode"): 
             naive_query = full_query + f"Context: {context.get('naive')}\nDraft: {draft.get('naive', '')}\n\n"
             hybrid_query = full_query + f"Context: {context.get('hybrid')}\nDraft: {draft.get('hybrid', '')}\n\n"
+            drift_query = (
+                full_query
+                + f"Context: {context.get('drift')}\n"
+                + f"Initial GraphRAG Drift response: {state.get('drift_response', '')}\n"
+                + f"Draft: {draft.get('drift', '')}\n\n"
+            )
 
             naive_task = self.model.with_structured_output(ReflectAnswer).ainvoke([
                 SystemMessage(content=REFLECT_PROMPT), 
@@ -240,13 +282,28 @@ class Agent:
                 HumanMessage(content=hybrid_query)
             ]) 
 
-            naive_response, hybrid_response = await asyncio.gather(naive_task, hybrid_task)
+            drift_task = self.model.with_structured_output(ReflectAnswer).ainvoke([
+                SystemMessage(content=REFLECT_PROMPT),
+                HumanMessage(content=drift_query)
+            ])
 
-            should_mod = {"naive": naive_response.should_modify, "hybrid": hybrid_response.should_modify} 
+            naive_response, hybrid_response, drift_reflection = await asyncio.gather(
+                naive_task, hybrid_task, drift_task
+            )
+
+            should_mod = {
+                "naive": naive_response.should_modify,
+                "hybrid": hybrid_response.should_modify,
+                "drift": drift_reflection.should_modify,
+            }
 
             return {
                 "should_modify": should_mod, 
-                "reflect": {"naive": naive_response.feedback, "hybrid": hybrid_response.feedback}
+                "reflect": {
+                    "naive": naive_response.feedback,
+                    "hybrid": hybrid_response.feedback,
+                    "drift": drift_reflection.feedback,
+                }
             }
 
         else: 
@@ -271,7 +328,8 @@ class Agent:
     def should_modify(self, state: AgentState):
         naive_should_mod = state.get("should_modify").get("naive", False)
         hybrid_should_mod = state.get("should_modify").get("hybrid", False)
-        should_mod = naive_should_mod or hybrid_should_mod
+        drift_should_mod = state.get("should_modify").get("drift", False)
+        should_mod = naive_should_mod or hybrid_should_mod or drift_should_mod
 
         if not should_mod or state.get("revision_number") >= state.get("max_revisions"):
             return False
@@ -283,6 +341,7 @@ class Agent:
         
         naive_text = draft.get("naive")
         hybrid_text = draft.get("hybrid")
+        drift_text = draft.get("drift")
         
         updated_state = {
             "human_messages": [HumanMessage(content=query)],
@@ -291,6 +350,9 @@ class Agent:
         
         if naive_text:
             updated_state["naive_messages"] = [AIMessage(content=naive_text)]
+
+        if "drift" in draft:
+            updated_state["drift_messages"] = [AIMessage(content=drift_text)]
             
         return updated_state
 

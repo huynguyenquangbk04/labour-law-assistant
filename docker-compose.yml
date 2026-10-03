@@ -31,15 +31,17 @@ services:
       - POSTGRES_DATABASE=${POSTGRES_DATABASE}
       - BASE_URL=${BASE_URL}
       - API_KEY=${API_KEY}
-      - OPENAI_API_KEY=${API_KEY}
-      - OPENAI_API_BASE=${BASE_URL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_API_BASE=${OPENAI_API_BASE}
       - OPENAI_MODEL=${OPENAI_MODEL}
       - TAVILY_API_KEY=${TAVILY_API_KEY}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL}
       - EMBEDDING_DIM=${EMBEDDING_DIM}
       - EMBEDDING_QUERY_SENTENCE=${EMBEDDING_QUERY_SENTENCE}
       - LLM_MODEL=${LLM_MODEL}
-      - LIGHTRAG_WORKING_DIR=/app/backend/data
+      - WORKING_DIR=/app/backend/data
+      - LIGHTRAG_WORKING_DIR=/app/backend/core/lightrag_project
+      - GRAPHRAG_WORKING_DIR=/app/backend/core/graphrag_project
       - SUMMARY_LANGUAGE=Vietnamese
       - 'APP_ENTITY_TYPES=["Văn bản pháp luật", "Điều khoản", "Cơ quan ban hành", "Đối tượng áp dụng", "Hành vi vi phạm", "Hình thức xử phạt", "Thời hạn", "Khái niệm pháp lý"]'
     depends_on:

@@ -1,7 +1,7 @@
 import os
 from lightrag import LightRAG
 from lightrag.utils import EmbeddingFunc
-from backend.core.llm_services import EmbeddingFuncWrapper, llm_reasoning_func, chunk_custom_func
+from backend.core.llm_services import EmbeddingFuncWrapper, llm_reasoning_func
 from backend.config import settings
 
 class RAGEngine: # Because intialize one LightRAG including connecting it with database is very heavy, we use class method in order to maitain only one LightRAG engine
@@ -30,8 +30,7 @@ class RAGEngine: # Because intialize one LightRAG including connecting it with d
                     func=embedding_func,
                     model_name=settings.EMBEDDING_MODEL
                 ),
-                chunking_func=chunk_custom_func,
-
+                
                 # automatically search and load the database information in os system
                 kv_storage="PGKVStorage",
                 vector_storage="PGVectorStorage",

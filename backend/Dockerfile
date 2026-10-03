@@ -21,6 +21,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY . ./backend
 
 EXPOSE 8000
+EXPOSE 8123
 
-# Run from /app so that the 'backend' folder is a package
-CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Keep the proxy and backend in the same container because GraphRAG uses localhost:8123.
+CMD ["sh", "-c", "python -m uvicorn backend.core.local_llm_proxy:app --host 0.0.0.0 --port 8123 & exec python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000"]

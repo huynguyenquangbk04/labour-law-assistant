@@ -1,0 +1,26 @@
+[
+  {
+    "id": "preamble",
+    "title": "Lời mở đầu",
+    "text": "BỘ LUẬT\nLAO ĐỘNG\nCăn cứ Hiến pháp nước Cộng hòa xã hội chủ nghĩa Việt Nam;\nQuốc hội ban hành Bộ luật Lao động.",
+    "type": "preamble",
+    "chuong_so": null,
+    "chuong_ten": null,
+    "muc_so": null,
+    "muc_ten": null,
+    "dieu_so": null,
+    "dieu_ten": null
+  },
+  {
+    "id": "dieu_1",
+    "title": "Điều 1. Phạm vi điều chỉnh",
+    "text": "[Chương I - NHỮNG QUY ĐỊNH CHUNG]\nĐiều 1. Phạm vi điều chỉnh\n\nBộ luật Lao động quy định tiêu chuẩn lao động; quyền, nghĩa vụ, trách nhiệm của người lao động, người sử dụng lao động, tổ chức đại diện người lao động tại cơ sở, tổ chức đại diện người sử dụng lao động trong quan hệ lao động và các quan hệ khác liên quan trực tiếp đến quan hệ lao động; quản lý nhà nước về lao động.",
+    "type": "dieu",
+    "chuong_so": "I",
+    "chuong_ten": "NHỮNG QUY ĐỊNH CHUNG",
+    "muc_so": null,
+    "muc_ten": null,
+    "dieu_so": "1",
+    "dieu_ten": "Phạm vi điều chỉnh"
+  }
+]
