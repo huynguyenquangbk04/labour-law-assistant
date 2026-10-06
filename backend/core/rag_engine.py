@@ -19,7 +19,6 @@ class RAGEngine: # Because intialize one LightRAG including connecting it with d
             os.environ["POSTGRES_PASSWORD"] = settings.POSTGRES_PASSWORD
             os.environ["POSTGRES_DATABASE"] = settings.POSTGRES_DATABASE
 
-            entity_types_str = ", ".join(settings.APP_ENTITY_TYPES)
 
             cls._instance = LightRAG(
                 working_dir=settings.LIGHTRAG_WORKING_DIR,
@@ -36,10 +35,13 @@ class RAGEngine: # Because intialize one LightRAG including connecting it with d
                 vector_storage="PGVectorStorage",
                 graph_storage="PGGraphStorage",
                 doc_status_storage="PGDocStatusStorage",
+                entity_extraction_use_json=True,
 
+                # Pass the guidance strings to the LightRAG instance
                 addon_params={
                     "language": settings.SUMMARY_LANGUAGE,
-                    "entity_types_guidance": f"Extract entities of types: {entity_types_str}"
+                    "entity_types_guidance": settings.entity_types_guidance,
+                    "edge_types_guidance": settings.edge_types_guidance,
                 }
             )
             await cls._instance.initialize_storages() # initialize connection pools

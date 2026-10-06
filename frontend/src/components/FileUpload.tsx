@@ -33,7 +33,11 @@ export default function FileUpload({ onSuccess }: FileUploadProps) {
         },
       })
       setStatus('success')
-      setMessage(response.data.message)
+      const proposalsCount = response.data.proposals_count || 0
+      const proposalMsg = proposalsCount > 0
+        ? ` ${proposalsCount} conflict(s) detected — review in HITL panel.`
+        : ''
+      setMessage(response.data.message + proposalMsg)
       setFile(null)
       if (onSuccess) onSuccess()
     } catch (error: any) {

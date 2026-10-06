@@ -21,3 +21,30 @@ class UploadFileResponse(BaseModel):
     filename: str
     status: str
     message: str
+    proposals: Optional[list[dict]] = None  # populated when conflict proposals require human review
+
+
+class ProposalResponse(BaseModel):
+    id: str
+    status: str
+    created_at: str
+    source_filename: str
+    proposal_type: str
+    new_entity_id: str
+    existing_entity_id: str
+    reason: str
+    suggested_tags: dict = {}
+    resolved_at: Optional[str] = None
+
+class ProposalActionResponse(BaseModel):
+    id: str
+    status: str
+    message: str
+
+class ResumeRequest(BaseModel):
+    """Sent by the human after the graph pauses at the reflect interrupt."""
+    thread_id: int
+    # Human decision: True = force redraft, False = skip redraft and finalize
+    human_approve_modify: bool
+    # Optional human feedback injected into reflect state before resuming
+    feedback: Optional[str] = None

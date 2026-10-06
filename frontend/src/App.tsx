@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react'
 import ChatInterface from './components/ChatInterface'
 import FileUpload from './components/FileUpload'
-import { Scale, Database, Shield, Share2, FileText, ExternalLink, Columns } from 'lucide-react'
+import GraphViewer from './components/GraphViewer'
+import ProposalReviewer from './components/ProposalReviewer'
+import { Scale, Database, Shield, Share2, FileText, ExternalLink, Columns, AlertTriangle } from 'lucide-react'
 import client from './api/client'
 
 function App() {
@@ -9,7 +11,8 @@ function App() {
   const [documents, setDocuments] = useState<any[]>([])
   const [comparisonMode, setComparisonMode] = useState(false)
   const [critique, setCritique] = useState(false)
-
+  const [showGraph, setShowGraph] = useState(false)
+  
   const fetchDocuments = async () => {
     try {
       const response = await client.get('/documents')
@@ -95,18 +98,24 @@ function App() {
 
           <section>
             <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Graph Visualization</h2>
-            <a 
-              href="http://localhost:8001" 
-              target="_blank" 
-              rel="noopener noreferrer"
-              className="flex items-center justify-between p-3 rounded-xl bg-primary/5 border border-primary/10 hover:bg-primary/10 transition-all group"
+            <button 
+              onClick={() => setShowGraph(true)}
+              className="w-full flex items-center justify-between p-3 rounded-xl bg-primary/5 border border-primary/10 hover:bg-primary/10 transition-all group"
             >
               <div className="flex items-center gap-2">
                 <Share2 className="w-4 h-4 text-primary" />
                 <span className="text-sm font-medium text-foreground">Explore Graph</span>
               </div>
               <ExternalLink className="w-3 h-3 text-muted-foreground group-hover:text-primary transition-colors" />
-            </a>
+            </button>
+          </section>
+
+          <section>
+            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3 flex items-center gap-1.5">
+              <AlertTriangle className="w-3 h-3" />
+              Conflict Review (HITL)
+            </h2>
+            <ProposalReviewer onUpdate={fetchDocuments} />
           </section>
 
           <section>
@@ -148,6 +157,7 @@ function App() {
       <main className="flex-1 flex flex-col relative bg-muted/30">
         <ChatInterface comparisonMode={comparisonMode} critique={critique} />
       </main>
+       {showGraph && <GraphViewer onClose={() => setShowGraph(false)} />}
     </div>
   )
 }

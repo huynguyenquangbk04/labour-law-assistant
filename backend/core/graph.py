@@ -14,7 +14,7 @@ from backend.core.graphrag_engine import GraphRAGEngine
 from backend.core.prompts import SUMMARIZE_PROMPT, RESEARCH_PROMPT, DRAFT_PROMPT, REFLECT_PROMPT
 
 tavily = AsyncTavilyClient()
-model = ChatOpenAI(model_name=settings.OPENAI_MODEL, temperature=0, streaming=True)
+model = ChatOpenAI(model_name=settings.OPENAI_MODEL, temperature=0, streaming=True, base_url=settings.BASE_URL, api_key=settings.API_KEY)
 
 class DualContent(TypedDict, total=False): 
     naive: str
@@ -85,6 +85,11 @@ class Agent:
         graph.add_conditional_edges("reflect", self.should_modify, {True: "draft", False: "finalize"})
         graph.add_edge("finalize", END)
         graph.set_entry_point("summarize")
+        
+        self.graph = graph.compile(
+            checkpointer=memory,
+            interrupt_after=["reflect"],  # HITL: pause after reflect so human can approve/reject redraft
+        )
         
         self.graph = graph.compile(checkpointer=memory)
         self.model = model

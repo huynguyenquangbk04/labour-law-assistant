@@ -48,6 +48,19 @@ async def llm_reasoning_func( # Using different reasoning model instead of defau
         **kwargs
     ): # NOTICE: these paramters are passed down by LightRAG including prompt and system_prompt. For example, LightRAG gets system_prompt + prompt from human, it then handles the prompts inside and creates its own prompt and system_prompt and pass to DeepSeek
 
+    # ── Inject edge type constraint into extraction calls ──────────────────
+    # LightRAG extraction system prompts always contain "relationship_keywords".
+    # No other call type includes that string, so it's a safe detection signal.
+    if system_prompt and "relationship_keywords" in system_prompt:
+        edge_constraint = (
+            "\n\n---Relationship Types---\n"
+            "For `relationship_keywords`, use ONLY one of the following types. "
+            "Do NOT invent new relationship types:\n"
+            + settings.edge_types_guidance
+        )
+        system_prompt = system_prompt + edge_constraint
+    # ───────────────────────────────────────────────────────────────────────
+
     client = get_openai_client()
     messages = []
 
@@ -72,6 +85,7 @@ async def llm_reasoning_func( # Using different reasoning model instead of defau
     ] 
 
     api_kwargs = {k:v for k, v in kwargs.items() if k in allowed_params} # not every arguments returned by LightRAG can be used by different LLM model    
+    api_kwargs["temperature"] = 0.0
     
     response = await client.chat.completions.create(
         model=settings.LLM_MODEL,
