@@ -1,5 +1,6 @@
 import operator
 import asyncio
+import re
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_core.callbacks.manager import adispatch_custom_event
@@ -20,11 +21,13 @@ class DualContent(TypedDict, total=False):
     naive: str
     hybrid: str
     drift: str
+    active: str
 
 class ModifyCheck(TypedDict, total=False): 
     naive: bool
     hybrid: bool
     drift: bool
+    active: bool
 
 class SearchQueries(BaseModel):
     search_queries: list[str] = Field(
@@ -54,6 +57,12 @@ class AgentState(TypedDict):
     query: str
     comparison_mode: bool
     critique: bool
+    engine: str
+    rag_mode: str
+    lightrag_mode: str
+    graphrag_method: str
+    top_k: int
+    community_level: int
     full_query: str
     context: DualContent
     drift_response: str
@@ -67,6 +76,7 @@ class AgentState(TypedDict):
     naive_messages: Annotated[list[AIMessage], operator.add]
     hybrid_messages: Annotated[list[AIMessage], operator.add]
     drift_messages: Annotated[list[AIMessage], operator.add]
+    active_messages: Annotated[list[AIMessage], operator.add]
 
 class Agent: 
     def __init__(self, model, tavily, memory):
@@ -97,7 +107,7 @@ class Agent:
 
     async def summarize_node(self, state: AgentState):
         human_history = state.get("human_messages", [])[-5:]
-        ai_history = state.get("hybrid_messages", [])[-5:]
+        ai_history = (state.get("active_messages", []) or state.get("hybrid_messages", []))[-5:]
 
         if not human_history or not ai_history:
             return {"full_query": state.get("query")}
@@ -117,21 +127,48 @@ class Agent:
     async def get_context_node(self, state: AgentState):
         rag = RAGEngine.get_instance()
         full_query = state.get("full_query")
+        top_k = state.get("top_k", 5) or 5
 
         context_data = {}
         if not state.get("comparison_mode"): 
-            context_data["hybrid"] = await rag.aquery(query=full_query, param=QueryParam(mode="hybrid", only_need_context=True))
+            engine = state.get("engine", "lightrag")
+            if engine == "graphrag":
+                method = state.get("rag_mode") or state.get("graphrag_method") or "drift"
+                try:
+                    graphrag_res, graphrag_ctx = await GraphRAGEngine.query(full_query, method=method)
+                except Exception as e:
+                    graphrag_res, graphrag_ctx = f"GraphRAG error: {str(e)}", ""
+
+                context_data["active"] = str(graphrag_ctx or "")
+                context_data["hybrid"] = str(graphrag_ctx or "")
+                context_data["drift"] = str(graphrag_ctx or "")
+                return {"context": context_data, "drift_response": str(graphrag_res or "")}
+            else:
+                mode = state.get("rag_mode") or state.get("lightrag_mode") or "hybrid"
+                ctx = await rag.aquery(query=full_query, param=QueryParam(mode=mode, only_need_context=True, top_k=top_k))
+                context_data["active"] = ctx
+                context_data["hybrid"] = ctx
+                return {"context": context_data}
         else: 
-            naive_task = rag.aquery(query=full_query, param=QueryParam(mode="naive", only_need_context=True))
-            hybrid_task = rag.aquery(query=full_query, param=QueryParam(mode="hybrid", only_need_context=True))
-            drift_task = GraphRAGEngine.query(full_query, method="drift")
-            naive_res, hybrid_res, (drift_response, drift_context) = await asyncio.gather(
-                naive_task, hybrid_task, drift_task
-            )
+            lr_mode = state.get("lightrag_mode") or "hybrid"
+            gr_method = state.get("graphrag_method") or "drift"
+
+            naive_task = rag.aquery(query=full_query, param=QueryParam(mode="naive", only_need_context=True, top_k=top_k))
+            hybrid_task = rag.aquery(query=full_query, param=QueryParam(mode=lr_mode, only_need_context=True, top_k=top_k))
+            drift_task = GraphRAGEngine.query(full_query, method=gr_method)
+
+            results = await asyncio.gather(naive_task, hybrid_task, drift_task, return_exceptions=True)
+            naive_res = results[0] if not isinstance(results[0], Exception) else f"Naive error: {results[0]}"
+            hybrid_res = results[1] if not isinstance(results[1], Exception) else f"LightRAG ({lr_mode}) error: {results[1]}"
+            if isinstance(results[2], Exception):
+                drift_res, drift_context = f"GraphRAG ({gr_method}) error: {results[2]}", ""
+            else:
+                drift_res, drift_context = results[2]
+
             context_data["naive"] = naive_res
             context_data["hybrid"] = hybrid_res
             context_data["drift"] = str(drift_context or "")
-            return {"context": context_data, "drift_response": str(drift_response or "")}
+            return {"context": context_data, "drift_response": str(drift_res or "")}
         return {"context": context_data}
 
     async def research_node(self, state: AgentState):
@@ -209,6 +246,7 @@ class Agent:
             if not reflect or should_mod.get("drift", False):
                 if not reflect:
                     drift_response = state.get("drift_response", "")
+                    drift_response = re.sub(r'\[Data:\s*[^\]]+\]', '', drift_response)
                     draft["drift"] = drift_response
                     if is_streaming_path and drift_response:
                         for offset in range(0, len(drift_response), 120):
@@ -241,10 +279,28 @@ class Agent:
             }  
         
         else: 
-            hybrid_query = full_query + f"Context: {context.get('hybrid')}\n\n"
+            active_ctx = context.get("active") or context.get("hybrid", "")
+            engine = state.get("engine", "lightrag")
 
-            if reflect.get("hybrid"):
-                hybrid_query += f"Feedback: {reflect.get('hybrid')}\nPrevious Draft: {draft.get('hybrid', '')}\n\n"
+            if engine == "graphrag" and state.get("drift_response") and not reflect:
+                graphrag_ans = state.get("drift_response", "")
+                if is_streaming_path and graphrag_ans:
+                    for offset in range(0, len(graphrag_ans), 120):
+                        await adispatch_custom_event(
+                            "comparison_chunk",
+                            {"mode": "hybrid", "content": graphrag_ans[offset:offset + 120]},
+                        )
+                return {
+                    "draft": {"hybrid": graphrag_ans, "active": graphrag_ans},
+                    "revision_number": 1
+                }
+
+            hybrid_query = full_query + f"Context: {active_ctx}\n\n"
+
+            if reflect.get("hybrid") or reflect.get("active"):
+                fb = reflect.get("active") or reflect.get("hybrid")
+                prev = draft.get("active") or draft.get("hybrid", "")
+                hybrid_query += f"Feedback: {fb}\nPrevious Draft: {prev}\n\n"
 
             cfg_hybrid = {"tags": ["final", "hybrid"]} if is_streaming_path else {}
 
@@ -254,7 +310,7 @@ class Agent:
             ], config=cfg_hybrid)
 
             return {
-                "draft": {"hybrid": hybrid_response.content},
+                "draft": {"hybrid": hybrid_response.content, "active": hybrid_response.content},
                 "revision_number": 1
             }    
                 
@@ -312,7 +368,9 @@ class Agent:
             }
 
         else: 
-            hybrid_query = full_query + f"Context: {context.get('hybrid')}\nDraft: {draft.get('hybrid', '')}\n\n"
+            active_ctx = context.get("active") or context.get("hybrid", "")
+            active_draft = draft.get("active") or draft.get("hybrid", "")
+            hybrid_query = full_query + f"Context: {active_ctx}\nDraft: {active_draft}\n\n"
 
             hybrid_response = await self.model.with_structured_output(ReflectAnswer).ainvoke([
                 SystemMessage(content=REFLECT_PROMPT), 
@@ -320,23 +378,21 @@ class Agent:
             ])     
 
             return {
-                "should_modify": {"hybrid": hybrid_response.should_modify}, 
-                "reflect": {"hybrid": hybrid_response.feedback}
+                "should_modify": {"hybrid": hybrid_response.should_modify, "active": hybrid_response.should_modify}, 
+                "reflect": {"hybrid": hybrid_response.feedback, "active": hybrid_response.feedback}
             }          
         
     def needs_critique(self, state: AgentState):
-        context = state.get("context")
-        if not state.get("critique") or len(context.get("hybrid", "")) < 1000: 
+        context = state.get("context", {})
+        active_ctx = context.get("active") or context.get("hybrid", "")
+        if not state.get("critique") or len(active_ctx) < 200: 
             return False
         return True
     
     def should_modify(self, state: AgentState):
-        naive_should_mod = state.get("should_modify").get("naive", False)
-        hybrid_should_mod = state.get("should_modify").get("hybrid", False)
-        drift_should_mod = state.get("should_modify").get("drift", False)
-        should_mod = naive_should_mod or hybrid_should_mod or drift_should_mod
-
-        if not should_mod or state.get("revision_number") >= state.get("max_revisions"):
+        should_mod_dict = state.get("should_modify", {})
+        any_mod = any(should_mod_dict.values())
+        if not any_mod or state.get("revision_number") >= state.get("max_revisions"):
             return False
         return True
 
@@ -347,10 +403,12 @@ class Agent:
         naive_text = draft.get("naive")
         hybrid_text = draft.get("hybrid")
         drift_text = draft.get("drift")
+        active_text = draft.get("active") or hybrid_text or drift_text
         
         updated_state = {
             "human_messages": [HumanMessage(content=query)],
-            "hybrid_messages": [AIMessage(content=hybrid_text if hybrid_text else "")]
+            "active_messages": [AIMessage(content=active_text if active_text else "")],
+            "hybrid_messages": [AIMessage(content=hybrid_text if hybrid_text else (active_text or ""))]
         }
         
         if naive_text:

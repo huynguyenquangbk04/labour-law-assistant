@@ -13,6 +13,9 @@ from backend.api.schemas import (
     ChatRequest, ChatResponse, ComparisonResponse, UploadFileResponse,
     ProposalResponse, ProposalActionResponse, ResumeRequest,
 )
+from lightrag import QueryParam
+from langchain_core.messages import SystemMessage, HumanMessage
+from backend.core.prompts import DRAFT_PROMPT
 from backend.config import settings
 from backend.core.law_parser import parse_and_save_docx
 
@@ -35,6 +38,12 @@ async def chat(request: ChatRequest, agent=Depends(get_agent)): # currently have
         "query": request.message,
         "comparison_mode": request.comparison_mode,
         "critique": request.critique,
+        "engine": request.engine or "lightrag",
+        "rag_mode": request.rag_mode or "hybrid",
+        "lightrag_mode": getattr(request, "lightrag_mode", None) or "hybrid",
+        "graphrag_method": getattr(request, "graphrag_method", None) or "drift",
+        "top_k": request.top_k or 5,
+        "community_level": request.community_level or 2,
         "full_query": "",
         "context": {},
         "drift_response": "",
@@ -55,22 +64,99 @@ async def chat(request: ChatRequest, agent=Depends(get_agent)): # currently have
                 drift_response = response.get("drift_messages")[-1].content
 
                 return ComparisonResponse(
-                    naive=ChatResponse(response=naive_response, mode="naive"),
-                    hybrid=ChatResponse(response=hybrid_response, mode="hybrid"),
-                    drift=ChatResponse(response=drift_response, mode="drift")
+                    naive=ChatResponse(response=naive_response, mode="naive", engine="lightrag"),
+                    hybrid=ChatResponse(response=hybrid_response, mode=getattr(request, "lightrag_mode", "hybrid") or "hybrid", engine="lightrag"),
+                    drift=ChatResponse(response=drift_response, mode=getattr(request, "graphrag_method", "drift") or "drift", engine="graphrag")
                 )
             
-            hybrid_response = response.get("hybrid_messages")[-1].content       
-            return ChatResponse(response=hybrid_response, mode="hybrid")
+            hybrid_messages = response.get("hybrid_messages", [])
+            hybrid_response = hybrid_messages[-1].content if hybrid_messages else ""
+            return ChatResponse(
+                response=hybrid_response,
+                mode=request.rag_mode or "hybrid",
+                engine=request.engine or "lightrag"
+            )
         
         except Exception as e: 
             raise HTTPException(status_code=500, detail=str(e))
     
-    async def event_generator(): # a generator to get the chunks from LightRAG streamming response(s) and yield them to chat function
+    async def event_generator():
         try:
             if request.comparison_mode:
                 yield f"data: {json.dumps({'type': 'start', 'mode': 'naive'})}\n\n"
                 yield f"data: {json.dumps({'type': 'start', 'mode': 'drift'})}\n\n"
+                yield f"data: {json.dumps({'type': 'start', 'mode': 'hybrid'})}\n\n"
+
+                queue = asyncio.Queue()
+                rag = RAGEngine.get_instance()
+                top_k = request.top_k or 5
+                lr_mode = getattr(request, "lightrag_mode", None) or "hybrid"
+                gr_method = getattr(request, "graphrag_method", None) or "drift"
+                full_query = request.message
+
+                async def run_naive():
+                    try:
+                        ctx = await rag.aquery(query=full_query, param=QueryParam(mode="naive", only_need_context=True, top_k=top_k))
+                        prompt_text = f"{full_query}\n\nContext:\n{ctx}"
+                        async for chunk in agent.model.astream([
+                            SystemMessage(content=DRAFT_PROMPT),
+                            HumanMessage(content=prompt_text)
+                        ]):
+                            if chunk.content:
+                                await queue.put({"type": "chunk", "mode": "naive", "content": chunk.content})
+                    except Exception as err:
+                        await queue.put({"type": "chunk", "mode": "naive", "content": f"\n[Naive error: {str(err)}]"})
+                    finally:
+                        await queue.put({"done": "naive"})
+
+                async def run_hybrid():
+                    try:
+                        ctx = await rag.aquery(query=full_query, param=QueryParam(mode=lr_mode, only_need_context=True, top_k=top_k))
+                        prompt_text = f"{full_query}\n\nContext:\n{ctx}"
+                        async for chunk in agent.model.astream([
+                            SystemMessage(content=DRAFT_PROMPT),
+                            HumanMessage(content=prompt_text)
+                        ]):
+                            if chunk.content:
+                                await queue.put({"type": "chunk", "mode": "hybrid", "content": chunk.content})
+                    except Exception as err:
+                        await queue.put({"type": "chunk", "mode": "hybrid", "content": f"\n[LightRAG error: {str(err)}]"})
+                    finally:
+                        await queue.put({"done": "hybrid"})
+
+                async def run_drift():
+                    try:
+                        resp, _ = await GraphRAGEngine.query(full_query, method=gr_method)
+                        resp_str = str(resp or "")
+                        # Remove citation tags like [Data: Sources (...); Entities (...); Relationships (...)]
+                        import re
+                        resp_str = re.sub(r'\[Data:\s*[^\]]+\]', '', resp_str)
+                        # stream response immediately in slices
+                        for offset in range(0, len(resp_str), 60):
+                            await queue.put({"type": "chunk", "mode": "drift", "content": resp_str[offset:offset + 60]})
+                            await asyncio.sleep(0.01)
+                    except Exception as err:
+                        await queue.put({"type": "chunk", "mode": "drift", "content": f"\n[GraphRAG error: {str(err)}]"})
+                    finally:
+                        await queue.put({"done": "drift"})
+
+                runners = [
+                    asyncio.create_task(run_naive()),
+                    asyncio.create_task(run_hybrid()),
+                    asyncio.create_task(run_drift())
+                ]
+
+                finished_count = 0
+                while finished_count < 3:
+                    item = await queue.get()
+                    if "done" in item:
+                        finished_count += 1
+                    else:
+                        yield f"data: {json.dumps(item)}\n\n"
+
+                await asyncio.gather(*runners, return_exceptions=True)
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                return
 
             yield f"data: {json.dumps({'type': 'start', 'mode': 'hybrid'})}\n\n"
 
@@ -167,16 +253,24 @@ async def uplload_file(file: UploadFile = File(...)):
 
     # save to rag database
     try:
-        parse_and_save_docx(file_path, [lightrag_file_path, graphrag_file_path])
+        # Only write to lightrag cache first; do not write to graphrag input yet
+        parse_and_save_docx(file_path, [lightrag_file_path])
 
         lightrag = RAGEngine.get_instance()
 
         with open(lightrag_file_path, "r", encoding="utf-8") as f:
             parsed_chunks = json.load(f)
 
-        text_chunks = [chunk["text"] for chunk in parsed_chunks]
-        chunk_titles = [chunk["title"] for chunk in parsed_chunks]
-        chunk_ids = [chunk["id"] for chunk in parsed_chunks]
+        text_chunks = [chunk["text"] for chunk in parsed_chunks if chunk.get("text", "").strip()]
+        chunk_titles = [chunk["title"] for chunk in parsed_chunks if chunk.get("text", "").strip()]
+        chunk_ids = [chunk["id"] for chunk in parsed_chunks if chunk.get("text", "").strip()]
+
+        if not text_chunks:
+            return UploadFileResponse(
+                filename=file.filename,
+                status="success",
+                message="No document content or chunks found to process.",
+            )
 
         # ── Conflict analysis ─────────────────────────────────────────────
         # Fetch existing nodes from LightRAG graph storage
@@ -235,6 +329,9 @@ async def uplload_file(file: UploadFile = File(...)):
                     proposals=saved,
                 )
         # ─────────────────────────────────────────────────────────────────
+
+        # Copy to graphrag input only when ready to index
+        shutil.copyfile(lightrag_file_path, graphrag_file_path)
 
         # No conflicts (or first upload) — insert immediately
         light_rag_task = lightrag.ainsert(

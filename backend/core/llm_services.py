@@ -99,7 +99,7 @@ async def llm_reasoning_func( # Using different reasoning model instead of defau
             print("LLM: Starting stream generator")
             try: 
                 async for chunk in response: # continuosly listen for chink from response
-                    if chunk.choices[0] and chunk.choices[0].delta.content: 
+                    if chunk.choices and chunk.choices[0].delta.content: 
                         c = chunk.choices[0].delta.content
                         print(f"LLM CHUNK: {c}")
                         yield c 
@@ -108,4 +108,7 @@ async def llm_reasoning_func( # Using different reasoning model instead of defau
             print("LLM: Stream generator finished")
         return stream_generator()
     
-    return response.choices[0].message.content
+    if not response.choices:
+        return ""
+    content = response.choices[0].message.content
+    return content if content is not None else ""

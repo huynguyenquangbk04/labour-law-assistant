@@ -95,9 +95,16 @@ async def chat_completions(req: ChatRequest):
         response_format=response_format,
     )
     if is_drift_action:
-        text = DriftActionResponse.model_validate_json(
-            _strip_markdown_code_fence(text)
-        ).model_dump_json()
+        cleaned_text = _strip_markdown_code_fence(text or "")
+        try:
+            text = DriftActionResponse.model_validate_json(cleaned_text).model_dump_json()
+        except Exception:
+            # Fallback if LLM outputted non-JSON or empty
+            text = DriftActionResponse(
+                response=cleaned_text or "No response generated.",
+                score=50,
+                follow_up_queries=[]
+            ).model_dump_json()
 
     if req.stream:
         return StreamingResponse(
