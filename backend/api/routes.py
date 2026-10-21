@@ -3,23 +3,24 @@ import json
 import uuid
 import shutil
 import asyncio
+import logging
+from contextlib import aclosing
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from backend.core.rag_engine import RAGEngine
 from backend.core.graphrag_engine import GraphRAGEngine
+from backend.core.graph import get_critique_result
 from backend.core.conflict_analyzer import ConflictAnalyzer, ConflictAnalysisResult
 from backend.core import proposal_store
 from backend.api.schemas import (
     ChatRequest, ChatResponse, ComparisonResponse, UploadFileResponse,
     ProposalResponse, ProposalActionResponse, ResumeRequest,
 )
-from lightrag import QueryParam
-from langchain_core.messages import SystemMessage, HumanMessage
-from backend.core.prompts import DRAFT_PROMPT
 from backend.config import settings
 from backend.core.law_parser import parse_and_save_docx
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 def get_agent(request: Request):
     return request.app.state.agent
@@ -27,21 +28,16 @@ def get_agent(request: Request):
 thread_id = 1
 
 @router.post("/chat")
-async def chat(request: ChatRequest, agent=Depends(get_agent)): # currently have not considered history in request and sources in responses
-
-    print(f"DEBUG: Chat request received. message='{request.message[:20]}...', comparison_mode={request.comparison_mode}, critique={request.critique}")
-
-    global thread_id    
+async def chat(request: ChatRequest, agent=Depends(get_agent)):
     thread = {"configurable": {"thread_id": thread_id}}
-
     input = {
         "query": request.message,
         "comparison_mode": request.comparison_mode,
         "critique": request.critique,
         "engine": request.engine or "lightrag",
         "rag_mode": request.rag_mode or "hybrid",
-        "lightrag_mode": getattr(request, "lightrag_mode", None) or "hybrid",
-        "graphrag_method": getattr(request, "graphrag_method", None) or "drift",
+        "lightrag_mode": request.lightrag_mode or "hybrid",
+        "graphrag_method": request.graphrag_method or "drift",
         "top_k": request.top_k or 5,
         "community_level": request.community_level or 2,
         "full_query": "",
@@ -51,153 +47,68 @@ async def chat(request: ChatRequest, agent=Depends(get_agent)): # currently have
         "draft": {},
         "reflect": {},
         "should_modify": {},
+        "critique_reviews": {},
+        "errors": {},
         "revision_number": 0,
-        "max_revisions": 3
+        "max_revisions": 3,
     }
 
-    if request.critique: 
-        try: 
-            response = await agent.graph.ainvoke(input=input, config=thread)
-            if request.comparison_mode: 
-                naive_response = response.get("naive_messages")[-1].content
-                hybrid_response = response.get("hybrid_messages")[-1].content
-                drift_response = response.get("drift_messages")[-1].content
-
-                return ComparisonResponse(
-                    naive=ChatResponse(response=naive_response, mode="naive", engine="lightrag"),
-                    hybrid=ChatResponse(response=hybrid_response, mode=getattr(request, "lightrag_mode", "hybrid") or "hybrid", engine="lightrag"),
-                    drift=ChatResponse(response=drift_response, mode=getattr(request, "graphrag_method", "drift") or "drift", engine="graphrag")
-                )
-            
-            hybrid_messages = response.get("hybrid_messages", [])
-            hybrid_response = hybrid_messages[-1].content if hybrid_messages else ""
-            return ChatResponse(
-                response=hybrid_response,
-                mode=request.rag_mode or "hybrid",
-                engine=request.engine or "lightrag"
-            )
-        
-        except Exception as e: 
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    async def event_generator():
+    if request.critique:
         try:
+            state = await agent.graph.ainvoke(input=input, config=thread)
+            draft = state.get("draft") or {}
+            errors = state.get("errors") or {}
+
+            def answer(mode: str, engine: str, rag_mode: str) -> ChatResponse:
+                return ChatResponse(
+                    response=draft.get(mode) or "", mode=rag_mode, engine=engine,
+                    error=errors.get(mode, {}).get("message"),
+                    critique=get_critique_result(state, mode),
+                )
+
             if request.comparison_mode:
-                yield f"data: {json.dumps({'type': 'start', 'mode': 'naive'})}\n\n"
-                yield f"data: {json.dumps({'type': 'start', 'mode': 'drift'})}\n\n"
-                yield f"data: {json.dumps({'type': 'start', 'mode': 'hybrid'})}\n\n"
+                payload = ComparisonResponse(
+                    naive=answer("naive", "lightrag", "naive"),
+                    hybrid=answer("hybrid", "lightrag", request.lightrag_mode or "hybrid"),
+                    drift=answer("drift", "graphrag", request.graphrag_method or "drift"),
+                )
+            else:
+                payload = answer("hybrid", request.engine or "lightrag", request.rag_mode or "hybrid")
+            response = JSONResponse(content=payload.model_dump())
+        except Exception:
+            logger.exception("Chat workflow failed")
+            raise HTTPException(status_code=500, detail="The chat request could not be completed. Please try again.")
+    else:
+        async def event_generator():
+            try:
+                modes = ("naive", "hybrid", "drift") if request.comparison_mode else ("hybrid",)
+                for mode in modes:
+                    yield f"data: {json.dumps({'type': 'start', 'mode': mode})}\n\n"
 
-                queue = asyncio.Queue()
-                rag = RAGEngine.get_instance()
-                top_k = request.top_k or 5
-                lr_mode = getattr(request, "lightrag_mode", None) or "hybrid"
-                gr_method = getattr(request, "graphrag_method", None) or "drift"
-                full_query = request.message
-
-                async def run_naive():
-                    try:
-                        ctx = await rag.aquery(query=full_query, param=QueryParam(mode="naive", only_need_context=True, top_k=top_k))
-                        prompt_text = f"{full_query}\n\nContext:\n{ctx}"
-                        async for chunk in agent.model.astream([
-                            SystemMessage(content=DRAFT_PROMPT),
-                            HumanMessage(content=prompt_text)
-                        ]):
-                            if chunk.content:
-                                await queue.put({"type": "chunk", "mode": "naive", "content": chunk.content})
-                    except Exception as err:
-                        await queue.put({"type": "chunk", "mode": "naive", "content": f"\n[Naive error: {str(err)}]"})
-                    finally:
-                        await queue.put({"done": "naive"})
-
-                async def run_hybrid():
-                    try:
-                        ctx = await rag.aquery(query=full_query, param=QueryParam(mode=lr_mode, only_need_context=True, top_k=top_k))
-                        prompt_text = f"{full_query}\n\nContext:\n{ctx}"
-                        async for chunk in agent.model.astream([
-                            SystemMessage(content=DRAFT_PROMPT),
-                            HumanMessage(content=prompt_text)
-                        ]):
-                            if chunk.content:
-                                await queue.put({"type": "chunk", "mode": "hybrid", "content": chunk.content})
-                    except Exception as err:
-                        await queue.put({"type": "chunk", "mode": "hybrid", "content": f"\n[LightRAG error: {str(err)}]"})
-                    finally:
-                        await queue.put({"done": "hybrid"})
-
-                async def run_drift():
-                    try:
-                        resp, _ = await GraphRAGEngine.query(full_query, method=gr_method)
-                        resp_str = str(resp or "")
-                        # Remove citation tags like [Data: Sources (...); Entities (...); Relationships (...)]
-                        import re
-                        resp_str = re.sub(r'\[Data:\s*[^\]]+\]', '', resp_str)
-                        # stream response immediately in slices
-                        for offset in range(0, len(resp_str), 60):
-                            await queue.put({"type": "chunk", "mode": "drift", "content": resp_str[offset:offset + 60]})
-                            await asyncio.sleep(0.01)
-                    except Exception as err:
-                        await queue.put({"type": "chunk", "mode": "drift", "content": f"\n[GraphRAG error: {str(err)}]"})
-                    finally:
-                        await queue.put({"done": "drift"})
-
-                runners = [
-                    asyncio.create_task(run_naive()),
-                    asyncio.create_task(run_hybrid()),
-                    asyncio.create_task(run_drift())
-                ]
-
-                finished_count = 0
-                while finished_count < 3:
-                    item = await queue.get()
-                    if "done" in item:
-                        finished_count += 1
-                    else:
-                        yield f"data: {json.dumps(item)}\n\n"
-
-                await asyncio.gather(*runners, return_exceptions=True)
+                async with aclosing(agent.graph.astream_events(input=input, config=thread, version="v2")) as events:
+                    async for event in events:
+                        kind = event.get("event")
+                        if kind == "on_custom_event" and event.get("name") in ("comparison_chunk", "branch_error"):
+                            event_type = "chunk" if event["name"] == "comparison_chunk" else "branch_error"
+                            yield f"data: {json.dumps({'type': event_type, **event.get('data', {})})}\n\n"
+                        elif kind == "on_chat_model_stream" and "final" in event.get("tags", []):
+                            content = event["data"]["chunk"].content
+                            if content:
+                                for mode in modes:
+                                    if mode in event["tags"]:
+                                        yield f"data: {json.dumps({'type': 'chunk', 'mode': mode, 'content': content})}\n\n"
+                                        break
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                return
+            except Exception:
+                logger.exception("Chat stream failed")
+                yield f"data: {json.dumps({'type': 'error', 'message': 'The chat request could not be completed. Please try again.'})}\n\n"
 
-            yield f"data: {json.dumps({'type': 'start', 'mode': 'hybrid'})}\n\n"
+        response = StreamingResponse(
+            event_generator(), media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
-            async for event in agent.graph.astream_events(input=input, config=thread, version="v2"):
-                kind = event.get("event")
-                tags = event.get("tags", [])
-
-                if kind == "on_custom_event" and event.get("name") == "comparison_chunk":
-                    payload = event.get("data", {})
-                    yield f"data: {json.dumps({'type': 'chunk', **payload})}\n\n"
-                    continue
-
-                if kind == "on_chat_model_stream": 
-                    chunk = event["data"]["chunk"].content
-
-                    if not chunk:
-                        continue
-
-                    if "final" in tags: 
-                        if "naive" in tags: 
-                            yield f"data: {json.dumps({'type': 'chunk', 'mode': 'naive', 'content': chunk})}\n\n"
-                        elif "hybrid" in tags:
-                            yield f"data: {json.dumps({'type': 'chunk', 'mode': 'hybrid', 'content': chunk})}\n\n"
-                        elif "drift" in tags:
-                            yield f"data: {json.dumps({'type': 'chunk', 'mode': 'drift', 'content': chunk})}\n\n"
-                
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"                   
-                                    
-        except Exception as e: 
-              yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"    
-        
-    return StreamingResponse(
-        event_generator(), 
-        media_type="text/event-stream",
-        headers={
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
+    return response
 
 @router.get("/documents")
 async def list_documents():

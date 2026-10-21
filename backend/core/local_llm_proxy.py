@@ -1,8 +1,10 @@
 import json
+import logging
 from collections.abc import AsyncIterator
 
-from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+import openai
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Any
 from backend.core.llm_services import llm_reasoning_func, EmbeddingFuncWrapper
@@ -10,6 +12,20 @@ from backend.core.llm_services import llm_reasoning_func, EmbeddingFuncWrapper
 app = FastAPI()
 embedder = EmbeddingFuncWrapper()
 DRIFT_ACTION_MARKER = "[[DRIFT_ACTION_JSON]]"
+logger = logging.getLogger(__name__)
+UPSTREAM_ERROR = {
+    "message": "The upstream model request failed. Please try again.",
+    "type": "upstream_error",
+    "code": "upstream_error",
+}
+
+
+@app.exception_handler(openai.APIError)
+@app.exception_handler(json.JSONDecodeError)
+async def upstream_error_handler(request: Request, error: Exception):
+    status = error.status_code if isinstance(error, openai.APIStatusError) else 502
+    logger.warning("Upstream model request failed: type=%s status=%s", type(error).__name__, status)
+    return JSONResponse(status_code=status, content={"error": UPSTREAM_ERROR})
 
 
 class DriftActionResponse(BaseModel):
@@ -51,20 +67,25 @@ class ChatRequest(BaseModel):
 
 
 async def _stream_response(text_stream: AsyncIterator[str], model: str):
-    async for text in text_stream:
-        chunk = {
-            "id": "chatcmpl-local",
-            "object": "chat.completion.chunk",
-            "model": model,
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {"role": "assistant", "content": text},
-                    "finish_reason": None,
-                }
-            ],
-        }
-        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+    try:
+        async for text in text_stream:
+            chunk = {
+                "id": "chatcmpl-local",
+                "object": "chat.completion.chunk",
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": text},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+    except (openai.APIError, json.JSONDecodeError) as error:
+        logger.warning("Upstream model stream failed: type=%s", type(error).__name__)
+        yield f"data: {json.dumps({'error': UPSTREAM_ERROR})}\n\n"
+        return
     yield "data: [DONE]\n\n"
 
 

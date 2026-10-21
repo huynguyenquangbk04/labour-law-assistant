@@ -3,16 +3,19 @@ import { Send, User, Bot, Loader2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import ReferenceCard from './ReferenceCard'
+import { CritiqueDetails, type CritiqueResult } from './CritiqueDetails'
 
 interface Message {
   id: string
   role: 'user' | 'assistant'
   content?: string
+  error?: string
+  critique?: CritiqueResult | null
   sources?: any[]
   comparison?: {
-    naive: { content: string; sources: any[] }
-    hybrid: { content: string; sources: any[] }
-    drift: { content: string; sources: any[] }
+    naive: { content: string; sources: any[]; error?: string; critique?: CritiqueResult | null }
+    hybrid: { content: string; sources: any[]; error?: string; critique?: CritiqueResult | null }
+    drift: { content: string; sources: any[]; error?: string; critique?: CritiqueResult | null }
   }
 }
 
@@ -104,9 +107,9 @@ export default function ChatInterface({
             return {
               ...msg,
               comparison: {
-                naive: { content: data.naive.response, sources: data.naive.sources ?? [] },
-                hybrid: { content: data.hybrid.response, sources: data.hybrid.sources ?? [] },
-                drift: { content: data.drift.response, sources: data.drift.sources ?? [] }
+                naive: { content: data.naive.response, sources: data.naive.sources ?? [], error: data.naive.error, critique: data.naive.critique },
+                hybrid: { content: data.hybrid.response, sources: data.hybrid.sources ?? [], error: data.hybrid.error, critique: data.hybrid.critique },
+                drift: { content: data.drift.response, sources: data.drift.sources ?? [], error: data.drift.error, critique: data.drift.critique }
               }
             }
           }
@@ -114,6 +117,8 @@ export default function ChatInterface({
           return {
             ...msg,
             content: data.response,
+            error: data.error,
+            critique: data.critique,
             sources: data.sources ?? []
           }
         }))
@@ -136,49 +141,36 @@ export default function ChatInterface({
             const trimmedLine = line.trim()
             if (!trimmedLine || !trimmedLine.startsWith('data: ')) continue
             
+            let data: { type?: string; mode?: string; content?: string; message?: string; stage?: string }
             try {
-              const data = JSON.parse(trimmedLine.slice(6))
-              
-              if (data.type === 'chunk') {
-                setMessages(prev => prev.map(msg => {
-                  if (msg.id !== assistantMsgId) return msg
-                  
-                  const newMsg = { ...msg }
-                  if (newMsg.comparison) {
-                    if (data.mode === 'naive') {
-                      newMsg.comparison = {
-                        ...newMsg.comparison,
-                        naive: { ...newMsg.comparison.naive, content: newMsg.comparison.naive.content + data.content }
-                      }
-                    } else if (data.mode === 'drift') {
-                      newMsg.comparison = {
-                        ...newMsg.comparison,
-                        drift: { ...newMsg.comparison.drift, content: newMsg.comparison.drift.content + data.content }
-                      }
-                    } else {
-                      newMsg.comparison = {
-                        ...newMsg.comparison,
-                        hybrid: { ...newMsg.comparison.hybrid, content: newMsg.comparison.hybrid.content + data.content }
-                      }
-                    }
-                  } else {
-                    newMsg.content = (newMsg.content || '') + data.content
-                  }
-                  return newMsg
-                }))
-              } else if (data.type === 'error') {
-                throw new Error(data.message)
-              }
-            } catch (e) {
-              // Ignore parsing errors for non-JSON lines if any
+              data = JSON.parse(trimmedLine.slice(6))
+            } catch {
+              continue
             }
+            if (!data || typeof data !== 'object') continue
+            if (data.type === 'error') throw new Error(data.message || 'The chat request failed')
+            if (data.type !== 'chunk' && data.type !== 'branch_error') continue
+            const { content, message, mode, stage } = data
+            const isError = data.type === 'branch_error'
+            if (isError ? typeof message !== 'string' : typeof content !== 'string') continue
+            if (mode !== 'naive' && mode !== 'hybrid' && mode !== 'drift') continue
+            setMessages(prev => prev.map(msg => {
+              if (msg.id !== assistantMsgId) return msg
+              const branch = msg.comparison ? msg.comparison[mode] : msg
+              const updated = isError
+                ? { ...branch, error: message, content: stage === 'retrieval' || stage === 'draft' ? '' : branch.content }
+                : { ...branch, content: (branch.content || '') + content }
+              return msg.comparison
+                ? { ...msg, comparison: { ...msg.comparison, [mode]: updated } }
+                : { ...msg, ...updated }
+            }))
           }
         }
       }
     } catch (error) {
       setMessages(prev => prev.map(msg => 
         msg.id === assistantMsgId 
-          ? { ...msg, content: 'Sorry, I encountered an error processing your request.' } 
+          ? { ...msg, error: 'Sorry, I encountered an error processing your request. Please try again.' }
           : msg
       ))
     } finally {
@@ -247,7 +239,7 @@ export default function ChatInterface({
         </div>
         <div className="flex items-center gap-2 text-[10px]">
           <span className={`px-2 py-0.5 rounded font-medium ${critique ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400' : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'}`}>
-            {critique ? 'Critique: Active' : 'Direct Streaming'}
+            {critique ? 'Critique: up to 3 attempts' : 'Direct Streaming'}
           </span>
         </div>
       </div>
@@ -266,6 +258,7 @@ export default function ChatInterface({
               </div>
               
               <div className="flex-1 space-y-4 min-w-0">
+                {msg.error && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{msg.error}</p>}
                 {msg.comparison ? (
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     {/* Naive Response */}
@@ -275,11 +268,13 @@ export default function ChatInterface({
                         {isLoading && !msg.comparison.naive.content && <div className="w-1.5 h-1.5 rounded-full bg-slate-500 animate-pulse" />}
                       </div>
                       <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm h-full overflow-hidden">
+                        {msg.comparison.naive.error && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{msg.comparison.naive.error}</p>}
                         {msg.comparison.naive.content ? (
                           <MarkdownContent content={msg.comparison.naive.content} role="assistant" />
                         ) : (
-                          <SkeletonResponse />
+                          !msg.comparison.naive.error && <SkeletonResponse />
                         )}
+                        <CritiqueDetails result={msg.comparison.naive.critique} />
                       </div>
                     </div>
                     {/* GraphRAG Response */}
@@ -291,11 +286,13 @@ export default function ChatInterface({
                         {isLoading && !msg.comparison.drift.content && <div className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />}
                       </div>
                       <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-900 shadow-sm h-full overflow-hidden">
+                        {msg.comparison.drift.error && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{msg.comparison.drift.error}</p>}
                         {msg.comparison.drift.content ? (
                           <MarkdownContent content={msg.comparison.drift.content} role="assistant" />
                         ) : (
-                          <SkeletonResponse />
+                          !msg.comparison.drift.error && <SkeletonResponse />
                         )}
+                        <CritiqueDetails result={msg.comparison.drift.critique} />
                       </div>
                     </div>
                     {/* LightRAG Response */}
@@ -307,11 +304,13 @@ export default function ChatInterface({
                         {isLoading && !msg.comparison.hybrid.content && <div className="w-1.5 h-1.5 rounded-full bg-blue-600 animate-pulse" />}
                       </div>
                       <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-900 shadow-sm h-full overflow-hidden">
+                        {msg.comparison.hybrid.error && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{msg.comparison.hybrid.error}</p>}
                         {msg.comparison.hybrid.content ? (
                           <MarkdownContent content={msg.comparison.hybrid.content} role="assistant" />
                         ) : (
-                          <SkeletonResponse isHybrid />
+                          !msg.comparison.hybrid.error && <SkeletonResponse isHybrid />
                         )}
+                        <CritiqueDetails result={msg.comparison.hybrid.critique} />
                       </div>
                     </div>
                   </div>
@@ -322,11 +321,12 @@ export default function ChatInterface({
                         ? 'bg-primary text-primary-foreground rounded-tr-none' 
                         : 'bg-card border rounded-tl-none shadow-sm'
                     }`}>
-                      {msg.role === 'assistant' && !msg.content && isLoading ? (
+                      {msg.role === 'assistant' && !msg.content && !msg.error && isLoading ? (
                         <SkeletonResponse isHybrid />
                       ) : (
                         <MarkdownContent content={msg.content || ''} role={msg.role} />
                       )}
+                      <CritiqueDetails result={msg.critique} />
                     </div>
                     
                     {msg.sources && msg.sources.length > 0 && (

@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from typing import Optional, Any
+from pydantic import BaseModel, Field
+from typing import Optional, Any, Literal
 
 class ChatRequest(BaseModel):
     message: str
@@ -13,10 +13,24 @@ class ChatRequest(BaseModel):
     lightrag_mode: Optional[str] = "hybrid"  # mode for LightRAG in comparison (hybrid/local/global/mix)
     graphrag_method: Optional[str] = "drift"  # method for GraphRAG in comparison (drift/local/global/basic)
 
+class CritiqueReview(BaseModel):
+    attempt: int = Field(ge=1, le=3)
+    should_modify: bool
+    feedback: str
+
+
+class CritiqueResult(BaseModel):
+    status: Literal["approved", "limit_reached", "failed"]
+    max_attempts: int = Field(ge=1, le=3)
+    reviews: list[CritiqueReview]
+
+
 class ChatResponse(BaseModel):
     response: str
     mode: str = "hybrid"
     engine: Optional[str] = "lightrag"
+    error: Optional[str] = None
+    critique: Optional[CritiqueResult] = None
     sources: Optional[list[dict[str, Any]]] = []# List of sources, each source is a dictionary (key = id, name,...) 
 
 class ComparisonResponse(BaseModel):

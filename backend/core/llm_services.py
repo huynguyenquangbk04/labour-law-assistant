@@ -1,3 +1,4 @@
+import httpx
 import openai 
 from typing import Optional
 from backend.config import settings
@@ -86,29 +87,42 @@ async def llm_reasoning_func( # Using different reasoning model instead of defau
 
     api_kwargs = {k:v for k, v in kwargs.items() if k in allowed_params} # not every arguments returned by LightRAG can be used by different LLM model    
     api_kwargs["temperature"] = 0.0
+    stream_requested = api_kwargs.pop("stream", False)
     
+    # Use the SDK's SSE decoder for provider keep-alives; buffer only for non-streaming callers.
     response = await client.chat.completions.create(
         model=settings.LLM_MODEL,
         messages=messages, 
         extra_headers=extra_headers,
+        stream=True,
         **api_kwargs
     )
 
-    if api_kwargs.get("stream"):
-        async def stream_generator(): # generator 
-            print("LLM: Starting stream generator")
-            try: 
-                async for chunk in response: # continuosly listen for chink from response
-                    if chunk.choices and chunk.choices[0].delta.content: 
-                        c = chunk.choices[0].delta.content
-                        print(f"LLM CHUNK: {c}")
-                        yield c 
-            except Exception as e:
-                print(f"LLM STREAM ERROR: {str(e)}")
-            print("LLM: Stream generator finished")
+    async def stream_generator():
+        completed = False
+        async with response:
+            try:
+                async for chunk in response:
+                    if not chunk.choices:
+                        continue
+                    choice = chunk.choices[0]
+                    if choice.finish_reason == "error":
+                        raise openai.APIError("Upstream completion failed", request=response.response.request, body=None)
+                    if choice.finish_reason is not None:
+                        completed = True
+                    delta = getattr(choice, "delta", None)
+                    content = getattr(delta, "content", None)
+                    if content is not None:
+                        if not isinstance(content, str):
+                            raise openai.APIError("Invalid upstream content", request=response.response.request, body=None)
+                        yield content
+            except httpx.TransportError as error:
+                raise openai.APIConnectionError(
+                    message="Upstream model connection failed", request=response.response.request,
+                ) from error
+            if not completed:
+                raise openai.APIError("Incomplete upstream completion", request=response.response.request, body=None)
+
+    if stream_requested:
         return stream_generator()
-    
-    if not response.choices:
-        return ""
-    content = response.choices[0].message.content
-    return content if content is not None else ""
+    return "".join([text async for text in stream_generator()])
