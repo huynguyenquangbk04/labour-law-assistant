@@ -7,19 +7,26 @@ Produces structured proposals that are stored for human review (HITL).
 """
 
 import json
+import logging
 import re
 import uuid
-from datetime import datetime
-from typing import Optional
-from pydantic import BaseModel, Field
-from backend.core.llm_services import get_openai_client
+from datetime import date, datetime
+from typing import Literal, Optional
+from pydantic import BaseModel, Field, field_validator
+from backend.core.llm_services import llm_reasoning_func
 from backend.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+class ConflictAnalysisError(RuntimeError):
+    """The model could not complete a valid conflict assessment."""
 
 # ── Pydantic models for LLM structured output ──────────────────────────
 
 class ConflictProposal(BaseModel):
     """A single proposed change detected by the LLM."""
-    proposal_type: str = Field(
+    proposal_type: Literal['REPLACES', 'MODIFIES', 'SUPPLEMENTS', 'OVERLAPS'] = Field(
         ...,
         description="One of: REPLACES, MODIFIES, SUPPLEMENTS, OVERLAPS"
     )
@@ -35,7 +42,7 @@ class ConflictProposal(BaseModel):
         ...,
         description="Brief explanation of why this conflict was detected (in Vietnamese)"
     )
-    suggested_tags: dict = Field(
+    suggested_tags: dict[str, dict[str, str]] = Field(
         default_factory=dict,
         description=(
             "Suggested property updates for nodes, e.g. "
@@ -44,9 +51,25 @@ class ConflictProposal(BaseModel):
         )
     )
 
+    @field_validator('suggested_tags')
+    @classmethod
+    def validate_tags(cls, tags):
+        if set(tags) - {'old_node', 'new_node'}:
+            raise ValueError('Unknown proposal target')
+        for properties in tags.values():
+            if set(properties) - {'trang_thai', 'hieu_luc_tu', 'het_hieu_luc'}:
+                raise ValueError('Only legal validity properties may be reviewed')
+            for key, value in properties.items():
+                if key == 'trang_thai':
+                    if value not in {'con_hieu_luc', 'het_hieu_luc', 'chua_co_hieu_luc', 'khong_ro'}:
+                        raise ValueError('Unknown validity status')
+                elif value:
+                    date.fromisoformat(value)
+        return tags
+
 class ConflictAnalysisResult(BaseModel):
     """Full result from the LLM conflict analysis."""
-    proposals: list[ConflictProposal] = Field(default_factory=list)
+    proposals: list[ConflictProposal]
     summary: str = Field(
         default="",
         description="Brief summary of findings (in Vietnamese)"
@@ -55,18 +78,17 @@ class ConflictAnalysisResult(BaseModel):
 # ── The system prompt sent to the LLM ──────────────────────────────────
 
 def _build_conflict_prompt() -> str:
-    """Build the conflict analysis system prompt from settings.edge_types_guidance."""
+    """Keep review proposals separate from ordinary legal relations."""
     return (
         "Bạn là chuyên gia phân tích pháp luật Việt Nam. Nhiệm vụ: so sánh các đoạn văn bản "
         "MỚI được upload với các thực thể ĐÃ CÓ trong Knowledge Graph, để phát hiện các trường hợp:\n\n"
-        f"{settings.edge_types_guidance}\n\n"
+        f"{settings.conflict_types_guidance}\n\n"
         "Quy tắc:\n"
         "- Mỗi đoạn văn mới bắt đầu bằng \"[Nguồn: <tên_file>]\" — đây là tên file tài liệu mới. "
-        "Hãy dùng tên file này (đặc biệt năm ban hành trong tên file, vd \"BLLĐ_2019.docx\" vs "
-        "\"BLLĐ_2012.docx\") để suy luận xem tài liệu mới CÓ KHẢ NĂNG sửa đổi tài liệu cũ không.\n"
-        "- Các thực thể cũ có trường \"nguồn\" cho biết chúng đến từ file nào. Nếu cùng tên Điều "
-        "nhưng khác năm/nguồn, rất có khả năng là MODIFIES hoặc REPLACES.\n"
-        "- Chỉ báo cáo khi thực sự có bằng chứng từ nội dung HOẶC từ sự khác biệt năm trong tên file/Điều. KHÔNG được đoán tuỳ tiện.\n"
+        "Chỉ dùng tên file để xác định nguồn, không suy luận sửa đổi hoặc hiệu lực từ năm trong tên.\n"
+        "- Chỉ báo cáo khi nội dung có bằng chứng cụ thể, trích nguyên văn và ghi Điều/Khoản/Điểm trong reason.\n"
+        "- Sao chép ID chuẩn từ [ID: ...]; cùng số Điều ở hai văn bản không chứng minh thay thế.\n"
+        "- Không suy ra còn hiệu lực từ ngày ban hành. Sửa đổi một phần không làm hết hiệu lực toàn bộ văn bản.\n"
         "- Nếu không phát hiện xung đột nào, trả về danh sách proposals rỗng.\n"
         "- suggested_tags cho old_node nên bao gồm: trang_thai, het_hieu_luc (nếu biết).\n"
         "- suggested_tags cho new_node nên bao gồm: hieu_luc_tu, trang_thai.\n"
@@ -99,9 +121,6 @@ class ConflictAnalyzer:
     using LLM reasoning to detect legal conflicts/amendments.
     """
 
-    def __init__(self):
-        self.client = get_openai_client()
-
     async def analyze(
         self,
         new_chunks: list[str],
@@ -126,62 +145,88 @@ class ConflictAnalyzer:
             )
 
         # Summarise existing nodes for the prompt (keep token usage manageable)
-        existing_summary = self._summarize_existing_nodes(existing_nodes)
+        existing_summary = self._summarize_existing_nodes(existing_nodes, '\n'.join(new_chunks))
 
-        # Combine new chunks (truncate to ~6000 chars to stay within context)
-        new_text = "\n---\n".join(new_chunks)
-        if len(new_text) > 6000:
-            new_text = new_text[:6000] + "\n... (truncated)"
-
-        user_prompt = (
-            f"## Tài liệu mới: {source_filename}\n\n"
-            f"### Nội dung các đoạn trích:\n{new_text}\n\n"
-            f"### Các thực thể ĐÃ CÓ trong Knowledge Graph:\n{existing_summary}\n\n"
-            "Hãy phân tích và trả về JSON theo schema ConflictAnalysisResult."
-        )
-
+        batches = self._new_text_batches(new_chunks, max_chars=6000)
+        results: list[ConflictAnalysisResult] = []
         try:
-            response = await self.client.chat.completions.create(
-                model=settings.LLM_MODEL,
-                messages=[
-                    {"role": "system", "content": _build_conflict_prompt()},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.0,
-                timeout=120,
-                extra_headers={"X-Title": "Labour Law Assistant - Conflict Analyzer"},
-            )
-
-            raw = response.choices[0].message.content
-            if not raw or not raw.strip():
-                return ConflictAnalysisResult(
-                    proposals=[],
-                    summary="LLM trả về kết quả rỗng."
+            for new_text in batches:
+                user_prompt = (
+                    f"## Tài liệu mới: {source_filename}\n\n"
+                    f"### Nội dung các đoạn trích (phần {len(results) + 1}/{len(batches)}):\n{new_text}\n\n"
+                    f"### Các thực thể ĐÃ CÓ trong Knowledge Graph:\n{existing_summary}\n\n"
+                    "Hãy phân tích và trả về JSON theo schema ConflictAnalysisResult. "
+                    "Chỉ đề xuất thay đổi được chứng minh trong phần trích này."
                 )
+                raw = await llm_reasoning_func(
+                    user_prompt,
+                    system_prompt=_build_conflict_prompt(),
+                    response_format={"type": "json_object"},
+                    timeout=120,
+                )
+                if not raw or not raw.strip():
+                    raise ValueError('Conflict analysis returned no result')
+                json_match = re.search(r'\{[\s\S]*\}', raw)
+                parsed = json.loads(json_match.group() if json_match else raw)
+                results.append(ConflictAnalysisResult.model_validate(parsed))
 
-            # Try to extract JSON from the response (LLM may wrap it in markdown ```json ... ```)
-            json_match = re.search(r'\{[\s\S]*\}', raw)
-            if json_match:
-                parsed = json.loads(json_match.group())
-            else:
-                parsed = json.loads(raw)
-
-            return ConflictAnalysisResult.model_validate(parsed)
-
-        except Exception as e:
-            print(f"ConflictAnalyzer error: {e}")
+            proposals = []
+            seen = set()
+            for result in results:
+                for proposal in result.proposals:
+                    key = (proposal.proposal_type, proposal.new_entity_id, proposal.existing_entity_id)
+                    if key not in seen:
+                        seen.add(key)
+                        proposals.append(proposal)
+            summaries = [result.summary.strip() for result in results if result.summary.strip()]
             return ConflictAnalysisResult(
-                proposals=[],
-                summary=f"Lỗi khi phân tích xung đột: {str(e)}"
+                proposals=proposals,
+                summary=' '.join(dict.fromkeys(summaries)),
             )
+        except Exception as error:
+            reason = 'the model returned an invalid result' if isinstance(error, ValueError) else 'the upstream model request failed'
+            status = getattr(error, 'status_code', None)
+            if status is not None:
+                reason += f' (HTTP {status})'
+            logger.warning('Conflict analysis failed for %r: type=%s status=%s',
+                           source_filename, type(error).__name__, status)
+            raise ConflictAnalysisError(
+                f'Conflict analysis failed: {reason}; document was not indexed. Please try again.'
+            ) from error
 
-    def _summarize_existing_nodes(self, nodes: list[dict], max_nodes: int = 80) -> str:
+    @staticmethod
+    def _new_text_batches(chunks: list[str], *, max_chars: int) -> list[str]:
+        """Split on chunk boundaries so an article is never cut mid-text."""
+        batches: list[str] = []
+        current: list[str] = []
+        size = 0
+        for chunk in chunks:
+            text = str(chunk)
+            extra = len(text) + (5 if current else 0)
+            if current and size + extra > max_chars:
+                batches.append('\n---\n'.join(current))
+                current, size = [], 0
+            current.append(text)
+            size += len(text) + (5 if len(current) > 1 else 0)
+        if current:
+            batches.append('\n---\n'.join(current))
+        return batches or ['']
+
+    def _summarize_existing_nodes(self, nodes: list[dict], focus_text: str = '', max_nodes: int = 80) -> str:
         """
         Create a compact text summary of existing nodes for the LLM prompt.
         Includes entity_id, entity_type, source (file origin), and description snippet.
         """
+        article_numbers = set(re.findall(r'(?:Điều|dieu)\s+(\d+)\b', focus_text, re.IGNORECASE))
+        article_numbers.update(re.findall(r':dieu_(\d+)(?::|\b)', focus_text, re.IGNORECASE))
+        focused = []
+        other = []
+        for node in nodes:
+            entity_id = str(node.get('entity_id') or node.get('id') or '').casefold()
+            (focused if any(re.search(rf':dieu_{re.escape(number)}(?::|$)', entity_id) for number in article_numbers) else other).append(node)
+        selected = (focused + other)[:max_nodes]
         lines = []
-        for node in nodes[:max_nodes]:
+        for node in selected:
             eid = (node.get("entity_id") or node.get("id") or "?").lower().strip()
             etype = node.get("entity_type", "?")
             desc = (node.get("description") or "")[:150]
@@ -194,5 +239,5 @@ class ConflictAnalyzer:
 
         result = "\n".join(lines)
         if len(nodes) > max_nodes:
-            result += f"\n... và {len(nodes) - max_nodes} thực thể khác"
+            result += f"\n... và {len(nodes) - max_nodes} thực thể khác (đã ưu tiên các Điều được nhắc trong tài liệu mới)"
         return result

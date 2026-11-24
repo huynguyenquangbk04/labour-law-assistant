@@ -9,6 +9,7 @@ Staged chunks are stored separately so that ainsert is deferred until human appr
 
 import json
 import os
+import tempfile
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -26,15 +27,23 @@ def _load_proposals() -> list[dict]:
     try:
         with open(PROPOSALS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, IOError):
+    except FileNotFoundError:
         return []
 
 
 def _save_proposals(proposals: list[dict]) -> None:
-    """Save all proposals to disk."""
-    os.makedirs(os.path.dirname(PROPOSALS_FILE), exist_ok=True)
-    with open(PROPOSALS_FILE, "w", encoding="utf-8") as f:
-        json.dump(proposals, f, ensure_ascii=False, indent=2)
+    """Replace decisions atomically so interrupted writes preserve the old store."""
+    directory = os.path.dirname(PROPOSALS_FILE)
+    os.makedirs(directory, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=directory, suffix='.tmp', delete=False) as stream:
+            temporary = stream.name
+            json.dump(proposals, stream, ensure_ascii=False, indent=2)
+        os.replace(temporary, PROPOSALS_FILE)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 # ── Staged chunks (deferred insert) ───────────────────────────────────
@@ -46,6 +55,7 @@ def stage_chunks(
     file_paths: list[str],
     paragraphs: list[str] | None = None,
     full_text: str | None = None,
+    parsed_chunks: list[dict] | None = None,
 ) -> None:
     """Save chunks to a staging file so they can be inserted after human approval."""
     os.makedirs(STAGED_DIR, exist_ok=True)
@@ -58,6 +68,7 @@ def stage_chunks(
             "file_paths": file_paths,
             "paragraphs": paragraphs or [],
             "full_text": full_text or "",
+            "parsed_chunks": parsed_chunks or [],
             "created_at": datetime.now().isoformat(),
         }, f, ensure_ascii=False, indent=2)
 
@@ -70,7 +81,7 @@ def get_staged_chunks(batch_id: str) -> Optional[dict]:
     try:
         with open(staged_file, "r", encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, IOError):
+    except FileNotFoundError:
         return None
 
 

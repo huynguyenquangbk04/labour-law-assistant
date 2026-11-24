@@ -4,11 +4,14 @@ Parse Bộ luật Lao động (.docx) thành các chunk theo Điều.
 
 import json
 import re
+from hashlib import sha256
+from pathlib import Path
 import docx
+from docx.text.paragraph import Paragraph
 
 
-CHUONG_RE = re.compile(r"^Chương\s+([IVXLCDM]+)\s*$")
-MUC_RE = re.compile(r"^Mục\s+(\d+)\.\s*(.*)$")
+CHUONG_RE = re.compile(r"^Chương\s+([IVXLCDM]+|\d+)(?:[.:]\s*(.*))?\s*$", re.IGNORECASE)
+MUC_RE = re.compile(r"^Mục\s+(\d+)(?:[.:]\s*(.*))?\s*$", re.IGNORECASE)
 DIEU_RE = re.compile(r"^Điều\s+(\d+)\.\s*(.*)$")
 DIEU_BOOKMARK_RE = re.compile(r'w:name="dieu_(\d+)"')
 
@@ -17,7 +20,7 @@ def has_dieu_bookmark(p):
     """
     Trả về số Điều nếu paragraph chứa bookmark 'dieu_<n>', ngược lại None.
     Có logic này là vì các nguồn dữ liệu hiện tại chứa bookmarks tại mỗi Điều.
-    Nếu file .docx không bookmarks theo Điều thì dựa và DIEU_RE + bold (có implement bên dưới).
+    Nếu file .docx không có bookmark theo Điều thì dựa vào DIEU_RE + bold (có triển khai bên dưới).
     """
     m = DIEU_BOOKMARK_RE.search(p._p.xml)
     return m.group(1) if m else None
@@ -47,16 +50,25 @@ def is_bold_paragraph(p) -> bool:
     return all(is_run_bold(r) for r in runs)
 
 
-def parse_docx(path: str):
+def parse_docx(path: str, source_filename: str | None = None):
     doc = docx.Document(path)
-    paragraphs = [p for p in doc.paragraphs if p.text.strip()]
+    # Metadata (including the document number) can live in a table.
+    paragraphs = [Paragraph(p, doc) for p in doc.element.body.xpath('.//w:p')]
+    paragraphs = [p for p in paragraphs if p.text.strip()]
+    text = '\n'.join(p.text.strip() for p in paragraphs)
+    number = re.search(r'(?:Luật|Bộ luật|Nghị định|Thông tư|Nghị quyết|Số)\s*(?:số)?\s*:\s*([\wĐđ-]+/\d{4}/[\wĐđ-]+)', text, re.IGNORECASE)
+    source_filename = source_filename or Path(path).name
+    document_number = number.group(1) if number else Path(source_filename).stem
+    document_id = re.sub(r'[^\w-]+', '_', document_number.casefold()).strip('_')
+    if not number:
+        document_id += '_' + sha256(source_filename.encode()).hexdigest()[:12]
 
     chunks = []
 
     # --- 1. Tách phần mở đầu (trước "Chương I") ---
     first_chuong_idx = None
     for i, p in enumerate(paragraphs):
-        if is_bold_paragraph(p) and CHUONG_RE.match(p.text.strip()):
+        if CHUONG_RE.match(p.text.strip()):
             first_chuong_idx = i
             break
 
@@ -103,6 +115,7 @@ def parse_docx(path: str):
             "id": f"dieu_{current_dieu_so}",
             "title": f"Điều {current_dieu_so}. {current_dieu_ten}",
             "text": full_text,
+            "body": body,
             "type": "dieu",
             "chuong_so": current_chuong_so,
             "chuong_ten": current_chuong_ten,
@@ -116,10 +129,9 @@ def parse_docx(path: str):
     n = len(paragraphs)
     while i < n:
         text = paragraphs[i].text.strip()
-        bold = is_bold_paragraph(paragraphs[i])
 
         # --- Chương: paragraph này là "Chương <số>", paragraph kế tiếp là tên ---
-        m_chuong = CHUONG_RE.match(text) if bold else None
+        m_chuong = CHUONG_RE.match(text)
         if m_chuong:
             flush_dieu()
             current_dieu_so = None
@@ -128,7 +140,10 @@ def parse_docx(path: str):
 
             current_chuong_so = m_chuong.group(1)
             # Tên chương nằm ở paragraph ngay sau, cũng phải bold + HOA
-            if i + 1 < n and is_bold_paragraph(paragraphs[i + 1]):
+            if m_chuong.group(2):
+                current_chuong_ten = m_chuong.group(2).strip()
+                i += 1
+            elif i + 1 < n and paragraphs[i + 1].text.strip().isupper():
                 current_chuong_ten = paragraphs[i + 1].text.strip()
                 i += 2
             else:
@@ -141,7 +156,7 @@ def parse_docx(path: str):
             continue
 
         # --- Mục: "Mục <số>. TÊN MỤC" trên cùng 1 dòng ---
-        m_muc = MUC_RE.match(text) if bold else None
+        m_muc = MUC_RE.match(text)
         if m_muc:
             flush_dieu()
             current_dieu_so = None
@@ -149,15 +164,18 @@ def parse_docx(path: str):
             current_dieu_lines = []
 
             current_muc_so = m_muc.group(1)
-            current_muc_ten = m_muc.group(2).strip()
+            current_muc_ten = (m_muc.group(2) or '').strip()
             i += 1
+            if not current_muc_ten and i < n and paragraphs[i].text.strip().isupper():
+                current_muc_ten = paragraphs[i].text.strip()
+                i += 1
             continue
 
         # --- Điều: ưu tiên bookmark 'dieu_<n>' (đáng tin cậy nhất, không
         # phụ thuộc bold); nếu không có bookmark thì fallback về regex + bold ---
         bm_so = has_dieu_bookmark(paragraphs[i])
         m_dieu = DIEU_RE.match(text)
-        if bm_so is not None or (m_dieu and bold):
+        if bm_so is not None or m_dieu:
             flush_dieu()
             if m_dieu:
                 current_dieu_so = bm_so or m_dieu.group(1)
@@ -172,12 +190,21 @@ def parse_docx(path: str):
             continue
 
         # --- Dòng nội dung bình thường (khoản, điểm...) thuộc Điều hiện tại ---
+        if text.startswith('Bộ luật này đã được Quốc hội') or text.startswith('CHỦ TỊCH QUỐC HỘI'):
+            break
         if current_dieu_so is not None:
             current_dieu_lines.append(text)
         i += 1
 
     flush_dieu()  # đừng quên Điều cuối cùng
 
+    for chunk in chunks:
+        chunk['id'] = f"{document_id}:{chunk['id']}"
+        chunk['document_id'] = document_id
+        chunk['document_number'] = document_number
+        chunk['source_file'] = source_filename
+        chunk.setdefault('body', chunk['text'])
+        chunk['text'] = f"[Văn bản: {document_number}] [ID: {chunk['id']}]\n{chunk['text']}"
     return chunks
 
 

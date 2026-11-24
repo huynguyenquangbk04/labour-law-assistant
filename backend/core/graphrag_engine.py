@@ -1,4 +1,5 @@
 import os
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -7,6 +8,7 @@ from graphrag.config.load_config import load_config
 from graphrag.api import build_index, local_search, global_search, drift_search, basic_search
 
 from backend.config import settings
+from backend.services.legal_retrieval import article_context, requested_article_id
 
 
 def _read_parquet_or_none(path: Path) -> pd.DataFrame | None:
@@ -37,6 +39,7 @@ class GraphRAGEngine:
             working_dir = cls._working_dir().resolve()
             try:
                 config = load_config(root_dir=working_dir)
+                config.extract_graph.entity_types = settings.APP_ENTITY_TYPES
 
                 prompt_configs = (
                     (config.extract_graph, "prompt"),
@@ -109,6 +112,15 @@ class GraphRAGEngine:
         config = cls.get_instance()
         output_dir = cls._working_dir() / "output"
 
+        if method not in ('local', 'global', 'drift', 'basic'):
+            raise ValueError(f"Unknown method: {method}")
+        article_id = requested_article_id(question)
+        if article_id:
+            units = pd.read_parquet(output_dir / 'text_units.parquet')
+            matches = units.loc[units['document_id'] == article_id, 'text'].tolist()
+            context = article_context(article_id, '\n\n'.join(matches))
+            return context, context
+
         common_kwargs = {"config": config, "query": question, "response_type": "multiple paragraphs"}
 
         if method == "local":
@@ -148,4 +160,6 @@ class GraphRAGEngine:
         else:
             raise ValueError(f"Unknown method: {method}")
 
+        # DataFrame.__str__ truncates evidence; preserve the complete retrieved rows.
+        context = json.dumps(context, ensure_ascii=False, default=lambda value: value.to_dict(orient='records') if isinstance(value, pd.DataFrame) else str(value))
         return response, context

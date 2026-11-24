@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Send, User, Bot, Loader2 } from 'lucide-react'
+import { Send, User, Bot } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import ReferenceCard from './ReferenceCard'
@@ -41,7 +41,7 @@ export default function ChatInterface({
   communityLevel = 2,
 }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([
-    { id: 'initial', role: 'assistant', content: 'Hello! I am your Labour Law Assistant. How can I help you today?' }
+    { id: 'initial', role: 'assistant', content: 'Xin chào! Tôi là trợ lý pháp luật lao động. Tôi có thể giúp gì cho bạn?' }
   ])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
@@ -185,25 +185,25 @@ export default function ChatInterface({
       <ReactMarkdown 
         remarkPlugins={[remarkGfm]}
         components={{
-          p: ({node, ...props}) => <p className="leading-relaxed mb-3 last:mb-0 text-slate-800 dark:text-slate-200 text-sm font-normal" {...props} />,
-          ul: ({node, ...props}) => <ul className="list-disc ml-5 mb-3 text-slate-800 dark:text-slate-200 text-sm" {...props} />,
-          ol: ({node, ...props}) => <ol className="list-decimal ml-5 mb-3 text-slate-800 dark:text-slate-200 text-sm" {...props} />,
-          li: ({node, ...props}) => <li className="mb-1 leading-relaxed" {...props} />,
-          h1: ({node, ...props}) => <h1 className="text-lg font-bold mb-3 mt-4 text-slate-950 dark:text-white" {...props} />,
-          h2: ({node, ...props}) => <h2 className="text-base font-bold mb-2.5 mt-3 text-slate-950 dark:text-white" {...props} />,
-          h3: ({node, ...props}) => <h3 className="text-sm font-bold mb-2 mt-2.5 text-slate-950 dark:text-white" {...props} />,
-          h4: ({node, ...props}) => <h4 className="text-sm font-bold mb-2 mt-2 text-slate-950 dark:text-white" {...props} />,
-          h5: ({node, ...props}) => <h5 className="text-xs font-bold mb-1.5 mt-1.5 text-slate-950 dark:text-white" {...props} />,
-          h6: ({node, ...props}) => <h6 className="text-xs font-bold mb-1 mt-1 text-slate-950 dark:text-white" {...props} />,
-          strong: ({node, ...props}) => <strong className="font-bold text-slate-950 dark:text-white" {...props} />,
-          em: ({node, ...props}) => <em className="italic text-slate-900 dark:text-slate-200" {...props} />,
-          code: ({node, ...props}) => <code className="bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-100 px-1.5 py-0.5 rounded text-xs font-mono font-semibold" {...props} />,
-          blockquote: ({node, ...props}) => <blockquote className="border-l-4 border-blue-500 pl-3.5 italic my-2.5 text-slate-700 dark:text-slate-300" {...props} />,
-          table: ({node, ...props}) => <div className="overflow-x-auto my-3"><table className="w-full text-left border-collapse border border-slate-300 dark:border-slate-700" {...props} /></div>,
-          thead: ({node, ...props}) => <thead className="bg-slate-100 dark:bg-slate-800/80" {...props} />,
-          th: ({node, ...props}) => <th className="p-2.5 text-xs font-bold text-slate-950 dark:text-white border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800/90" {...props} />,
-          td: ({node, ...props}) => <td className="p-2.5 text-xs text-slate-900 dark:text-slate-200 border border-slate-300 dark:border-slate-700 leading-relaxed" {...props} />,
-          tr: ({node, ...props}) => <tr className="even:bg-slate-50/50 dark:even:bg-slate-800/30" {...props} />,
+          p: ({...props}) => <p className="leading-relaxed mb-3 last:mb-0 text-slate-800 dark:text-slate-200 text-sm font-normal" {...props} />,
+          ul: ({...props}) => <ul className="list-disc ml-5 mb-3 text-slate-800 dark:text-slate-200 text-sm" {...props} />,
+          ol: ({...props}) => <ol className="list-decimal ml-5 mb-3 text-slate-800 dark:text-slate-200 text-sm" {...props} />,
+          li: ({...props}) => <li className="mb-1 leading-relaxed" {...props} />,
+          h1: ({...props}) => <h1 className="text-lg font-bold mb-3 mt-4 text-slate-950 dark:text-white" {...props} />,
+          h2: ({...props}) => <h2 className="text-base font-bold mb-2.5 mt-3 text-slate-950 dark:text-white" {...props} />,
+          h3: ({...props}) => <h3 className="text-sm font-bold mb-2 mt-2.5 text-slate-950 dark:text-white" {...props} />,
+          h4: ({...props}) => <h4 className="text-sm font-bold mb-2 mt-2 text-slate-950 dark:text-white" {...props} />,
+          h5: ({...props}) => <h5 className="text-xs font-bold mb-1.5 mt-1.5 text-slate-950 dark:text-white" {...props} />,
+          h6: ({...props}) => <h6 className="text-xs font-bold mb-1 mt-1 text-slate-950 dark:text-white" {...props} />,
+          strong: ({...props}) => <strong className="font-bold text-slate-950 dark:text-white" {...props} />,
+          em: ({...props}) => <em className="italic text-slate-900 dark:text-slate-200" {...props} />,
+          code: ({...props}) => <code className="bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-100 px-1.5 py-0.5 rounded text-xs font-mono font-semibold" {...props} />,
+          blockquote: ({...props}) => <blockquote className="border-l-4 border-blue-500 pl-3.5 italic my-2.5 text-slate-700 dark:text-slate-300" {...props} />,
+          table: ({...props}) => <div className="overflow-x-auto my-3"><table className="w-full text-left border-collapse border border-slate-300 dark:border-slate-700" {...props} /></div>,
+          thead: ({...props}) => <thead className="bg-slate-100 dark:bg-slate-800/80" {...props} />,
+          th: ({...props}) => <th className="p-2.5 text-xs font-bold text-slate-950 dark:text-white border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800/90" {...props} />,
+          td: ({...props}) => <td className="p-2.5 text-xs text-slate-900 dark:text-slate-200 border border-slate-300 dark:border-slate-700 leading-relaxed" {...props} />,
+          tr: ({...props}) => <tr className="even:bg-slate-50/50 dark:even:bg-slate-800/30" {...props} />,
         }}
       >
         {content}
@@ -359,7 +359,7 @@ export default function ChatInterface({
                 handleSend()
               }
             }}
-            placeholder="Ask a legal question..."
+                      placeholder="Đặt câu hỏi về pháp luật lao động..."
             className="flex-1 bg-transparent border-none focus:ring-0 text-sm py-3 px-4 resize-none max-h-32 min-h-[44px]"
             rows={1}
           />
@@ -372,7 +372,7 @@ export default function ChatInterface({
           </button>
         </div>
         <p className="text-[10px] text-center text-muted-foreground mt-3">
-          Powered by LightRAG & DeepSeek. Citations are derived from the uploaded legal database.
+                      Vận hành bởi LightRAG và DeepSeek. Căn cứ được trích từ cơ sở dữ liệu pháp luật đã nạp.
         </p>
       </div>
     </div>

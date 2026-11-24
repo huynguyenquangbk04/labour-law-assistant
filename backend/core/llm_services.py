@@ -47,20 +47,12 @@ async def llm_reasoning_func( # Using different reasoning model instead of defau
         system_prompt: str = None,
         history: list[dict] = None,
         **kwargs
-    ): # NOTICE: these paramters are passed down by LightRAG including prompt and system_prompt. For example, LightRAG gets system_prompt + prompt from human, it then handles the prompts inside and creates its own prompt and system_prompt and pass to DeepSeek
+    ): # NOTICE: these parameters are passed down by LightRAG, including prompt and system_prompt.
 
-    # ── Inject edge type constraint into extraction calls ──────────────────
-    # LightRAG extraction system prompts always contain "relationship_keywords".
-    # No other call type includes that string, so it's a safe detection signal.
-    if system_prompt and "relationship_keywords" in system_prompt:
-        edge_constraint = (
-            "\n\n---Relationship Types---\n"
-            "For `relationship_keywords`, use ONLY one of the following types. "
-            "Do NOT invent new relationship types:\n"
-            + settings.edge_types_guidance
-        )
-        system_prompt = system_prompt + edge_constraint
-    # ───────────────────────────────────────────────────────────────────────
+    # GraphRAG sends extraction as a user message, including during gleaning.
+    extraction_messages = [prompt or '', *(m.get('content', '') for m in history or [])]
+    if any(isinstance(text, str) and text.startswith('[[LEGAL_GRAPH_EXTRACTION]]') for text in extraction_messages):
+        system_prompt = (system_prompt or '') + '\n' + settings.entity_types_guidance
 
     client = get_openai_client()
     messages = []
@@ -82,7 +74,7 @@ async def llm_reasoning_func( # Using different reasoning model instead of defau
     allowed_params = [
         "model", "messages", "stream", "temperature", "top_p", "n", "stop", "max_tokens",
         "presence_penalty", "frequency_penalty", "logit_bias", "user", "response_format",
-        "seed", "tools", "tool_choice", "parallel_tool_calls"
+        "seed", "tools", "tool_choice", "parallel_tool_calls", "timeout"
     ] 
 
     api_kwargs = {k:v for k, v in kwargs.items() if k in allowed_params} # not every arguments returned by LightRAG can be used by different LLM model    

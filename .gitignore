@@ -38,6 +38,8 @@ dist/
 # Docker local data
 postgres_data/
 checkpoints.sqlite
+/checkpoints.sqlite-shm
+/checkpoints.sqlite-wal
 
 # Dependencies and local data
 node_modules/
@@ -51,4 +53,6 @@ backend/core/graphrag_project/cache
 backend/core/graphrag_project/logs
 backend/core/graphrag_project/output
 backend/core/lightrag_project/*
-
+graphify-out/*
+.codex/*
+backend/tests/*

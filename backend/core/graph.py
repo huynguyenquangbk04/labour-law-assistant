@@ -23,6 +23,7 @@ import logging
 import operator
 import re
 from contextlib import aclosing
+from functools import partial
 from typing import TypedDict, Annotated, Literal
 
 from langgraph.graph import StateGraph, END
@@ -36,6 +37,8 @@ from lightrag import QueryParam
 from backend.config import settings
 from backend.core.rag_engine import RAGEngine
 from backend.core.graphrag_engine import GraphRAGEngine
+from backend.services.payroll import run_payroll_skill
+from backend.services.legal_retrieval import requested_article_id, requested_indexed_article
 from backend.core.prompts import SUMMARIZE_PROMPT, RESEARCH_PROMPT, DRAFT_PROMPT, REFLECT_PROMPT
 
 
@@ -143,6 +146,7 @@ class AgentState(TypedDict):
     context: DualContent
     drift_response: str
     references: list[str]
+    payroll_calculation: str | None
     draft: DualContent
     reflect: DualContent
     should_modify: ModifyCheck
@@ -177,7 +181,7 @@ async def _research(model, tavily, state: AgentState, modes: tuple[str, ...]):
     retrieved = context.get("active") or context.get("hybrid") or context.get("naive") or context.get("drift") or "No context retrieved."
     errors = dict(state.get("errors") or {})
     references = []
-    if all(errors.get(mode, {}).get("stage") == "retrieval" for mode in modes):
+    if requested_indexed_article(state.get('query', '')) or all(errors.get(mode, {}).get("stage") == "retrieval" for mode in modes):
         return {"references": references, "errors": errors}
     try:
         search = await model.with_structured_output(SearchQueries, method="function_calling").ainvoke([
@@ -192,7 +196,10 @@ async def _research(model, tavily, state: AgentState, modes: tuple[str, ...]):
             if isinstance(result, Exception):
                 failure = result
                 continue
-            references.extend(item["content"] for item in result.get("results", []) if isinstance(item.get("content"), str))
+            references.extend(
+                item['content'] + (f"\nNguồn: {item['url']}" if isinstance(item.get('url'), str) else '')
+                for item in result.get('results', []) if isinstance(item.get('content'), str)
+            )
         if failure is not None:
             raise failure
     except Exception as error:
@@ -202,10 +209,32 @@ async def _research(model, tavily, state: AgentState, modes: tuple[str, ...]):
     return {"references": references, "errors": errors}
 
 
+async def _payroll(model, state: AgentState):
+    history = [message.content for message in state.get('human_messages', [])[-5:] if isinstance(message.content, str)]
+    sources = {'user': '\n'.join([*history, state.get('query', '')])}
+    article_id = requested_article_id(state.get('full_query') or state.get('query', ''))
+    for mode, text in state.get('context', {}).items():
+        if text:
+            source = article_id if article_id and text.startswith(f'Truy xuất chính xác [{article_id}]:\n') else f'context:{mode}'
+            sources[source] = text
+    sources.update({f'web:{index}': text for index, text in enumerate(state.get('references', []), 1)})
+    feedback = '\n'.join(dict.fromkeys(text for mode, text in (state.get('reflect') or {}).items()
+                                      if (state.get('should_modify') or {}).get(mode))) or None
+    report = await run_payroll_skill(model, state.get('full_query') or state.get('query', ''), sources, feedback=feedback)
+    return {'payroll_calculation': report}
+
+
+async def _payroll_report(state: AgentState, mode: str, streaming: bool) -> str:
+    report = state['payroll_calculation']
+    if streaming:
+        await adispatch_custom_event('comparison_chunk', {'mode': mode, 'content': report})
+    return report
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # QA Agent — single-engine pipeline with optional critique loop
 #
-# Graph: summarize → get_context → research → draft → [reflect] → finalize
+# Graph: summarize → get_context → research → payroll → draft → [reflect] → finalize
 # ══════════════════════════════════════════════════════════════════════════════
 
 class QAAgent:
@@ -219,15 +248,17 @@ class QAAgent:
         graph.add_node("summarize", self.summarize_node)
         graph.add_node("get_context", self.get_context_node)
         graph.add_node("research", self.research_node)
+        graph.add_node("payroll", partial(_payroll, self.model))
         graph.add_node("draft", self.draft_node)
         graph.add_node("reflect", self.reflect_node)
         graph.add_node("finalize", self.finalize_node)
 
         graph.add_edge("summarize", "get_context")
         graph.add_edge("get_context", "research")
-        graph.add_edge("research", "draft")
+        graph.add_edge("research", "payroll")
+        graph.add_edge("payroll", "draft")
         graph.add_conditional_edges("draft", self._needs_critique, {True: "reflect", False: "finalize"})
-        graph.add_conditional_edges("reflect", self._should_modify, {True: "draft", False: "finalize"})
+        graph.add_conditional_edges("reflect", self._revision_target, {name: name for name in ('payroll', 'draft', 'finalize')})
         graph.add_edge("finalize", END)
         graph.set_entry_point("summarize")
 
@@ -278,7 +309,7 @@ class QAAgent:
 
         mode = state.get("rag_mode") or state.get("lightrag_mode") or "hybrid"
         try:
-            ctx = await RAGEngine.get_instance().aquery(
+            ctx = await RAGEngine.query_context(
                 query=full_query,
                 param=QueryParam(mode=mode, only_need_context=True, top_k=top_k)
             )
@@ -301,6 +332,10 @@ class QAAgent:
         if errors.get("hybrid", {}).get("stage") == "retrieval":
             return {"draft": {"hybrid": "", "active": ""}, "revision_number": state.get("revision_number", 0) + 1}
 
+        if state.get('payroll_calculation'):
+            answer = await _payroll_report(state, 'hybrid', is_streaming)
+            return {"draft": {"hybrid": answer, "active": answer}, "revision_number": state.get("revision_number", 0) + 1}
+
         if references:
             full_query = full_query + f"References: {references}\n\n"
 
@@ -321,7 +356,6 @@ class QAAgent:
             }
 
         hybrid_query = full_query + f"Context: {active_ctx}\n\n"
-
         if reflect.get("hybrid") or reflect.get("active"):
             feedback = reflect.get("active") or reflect.get("hybrid")
             prev_draft = draft.get("active") or draft.get("hybrid", "")
@@ -338,8 +372,9 @@ class QAAgent:
             errors["hybrid"] = await _branch_error("hybrid", "draft", error)
             return {"draft": {"hybrid": "", "active": ""}, "errors": errors, "revision_number": state.get("revision_number", 0) + 1}
 
+        answer = response.content
         return {
-            "draft": {"hybrid": response.content, "active": response.content},
+            "draft": {"hybrid": answer, "active": answer},
             "revision_number": state.get("revision_number", 0) + 1,
         }
 
@@ -355,6 +390,8 @@ class QAAgent:
         active_ctx = context.get("active") or context.get("hybrid", "")
         active_draft = draft.get("active") or draft.get("hybrid", "")
         query = full_query + f"Context: {active_ctx}\nDraft: {active_draft}\n\n"
+        if state.get('payroll_calculation'):
+            query += f"Payroll calculation:\n{state['payroll_calculation']}\n\n"
 
         if not active_draft:
             return {"should_modify": {}}
@@ -397,18 +434,20 @@ class QAAgent:
     def _needs_critique(self, state: AgentState) -> bool:
         return bool(state.get("critique"))
 
-    def _should_modify(self, state: AgentState) -> bool:
+    def _revision_target(self, state: AgentState) -> str:
         should_mod_dict = state.get("should_modify", {})
-        return (
+        if (
             any(should_mod_dict.values())
             and state.get("revision_number", 0) < state.get("max_revisions", 3)
-        )
+        ):
+            return 'payroll' if state.get('payroll_calculation') else 'draft'
+        return 'finalize'
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Comparison Agent — parallel naive / hybrid / drift with optional parallel reflect
 #
-# Graph: summarize → get_all_contexts → research → parallel_draft
+# Graph: summarize → get_all_contexts → research → payroll → parallel_draft
 #        → [parallel_reflect] → finalize_comparison
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -423,20 +462,22 @@ class ComparisonAgent:
         graph.add_node("summarize", self.summarize_node)
         graph.add_node("get_all_contexts", self.get_all_contexts_node)
         graph.add_node("research", self.research_node)
+        graph.add_node("payroll", partial(_payroll, self.model))
         graph.add_node("parallel_draft", self.parallel_draft_node)
         graph.add_node("parallel_reflect", self.parallel_reflect_node)
         graph.add_node("finalize_comparison", self.finalize_comparison_node)
 
         graph.add_edge("summarize", "get_all_contexts")
         graph.add_edge("get_all_contexts", "research")
-        graph.add_edge("research", "parallel_draft")
+        graph.add_edge("research", "payroll")
+        graph.add_edge("payroll", "parallel_draft")
         graph.add_conditional_edges(
             "parallel_draft", self._needs_critique,
             {True: "parallel_reflect", False: "finalize_comparison"}
         )
         graph.add_conditional_edges(
-            "parallel_reflect", self._should_modify,
-            {True: "parallel_draft", False: "finalize_comparison"}
+            "parallel_reflect", self._revision_target,
+            {name: name for name in ('payroll', 'parallel_draft', 'finalize_comparison')}
         )
         graph.add_edge("finalize_comparison", END)
         graph.set_entry_point("summarize")
@@ -475,7 +516,7 @@ class ComparisonAgent:
         gr_method = state.get("graphrag_method") or "drift"
 
         async def light_context(mode):
-            return await RAGEngine.get_instance().aquery(
+            return await RAGEngine.query_context(
                 query=full_query,
                 param=QueryParam(mode=mode, only_need_context=True, top_k=top_k)
             )
@@ -516,6 +557,12 @@ class ComparisonAgent:
         should_mod = state.get("should_modify", {})
         is_streaming = not self._needs_critique(state)
         errors = dict(state.get("errors") or {})
+
+        if state.get('payroll_calculation'):
+            for mode in ('naive', 'hybrid', 'drift'):
+                if errors.get(mode, {}).get('stage') != 'retrieval':
+                    draft[mode] = await _payroll_report(state, mode, is_streaming)
+            return {"draft": draft, "errors": errors, "revision_number": state.get("revision_number", 0) + 1}
 
         if references:
             full_query = full_query + f"References: {references}\n\n"
@@ -583,6 +630,8 @@ class ComparisonAgent:
     async def parallel_reflect_node(self, state: AgentState):
         """Reflect on all three drafts concurrently."""
         full_query = state.get("full_query")
+        if state.get('payroll_calculation'):
+            full_query += f"\nPayroll calculation:\n{state['payroll_calculation']}\n\n"
         context = state.get("context", {})
         references = "\n\n".join(state.get("references", []))
         draft = state.get("draft", {})
@@ -605,7 +654,7 @@ class ComparisonAgent:
             mode for mode in ("naive", "hybrid", "drift")
             if draft.get(mode)
             and errors.get(mode, {}).get("stage") not in ("retrieval", "draft", "reflection")
-            and (not reviews.get(mode) or reviews[mode][-1]["should_modify"])
+            and (state.get('payroll_calculation') or not reviews.get(mode) or reviews[mode][-1]["should_modify"])
         ]
         results = await asyncio.gather(*(reflect_mode(mode) for mode in modes), return_exceptions=True)
         should_modify: ModifyCheck = {}
@@ -648,12 +697,14 @@ class ComparisonAgent:
     def _needs_critique(self, state: AgentState) -> bool:
         return bool(state.get("critique"))
 
-    def _should_modify(self, state: AgentState) -> bool:
+    def _revision_target(self, state: AgentState) -> str:
         should_mod_dict = state.get("should_modify", {})
-        return (
+        if (
             any(should_mod_dict.values())
             and state.get("revision_number", 0) < state.get("max_revisions", 3)
-        )
+        ):
+            return 'payroll' if state.get('payroll_calculation') else 'parallel_draft'
+        return 'finalize_comparison'
 
 
 # ══════════════════════════════════════════════════════════════════════════════

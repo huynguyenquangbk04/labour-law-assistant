@@ -3,8 +3,9 @@ from lightrag import LightRAG
 from lightrag.utils import EmbeddingFunc
 from backend.core.llm_services import EmbeddingFuncWrapper, llm_reasoning_func
 from backend.config import settings
+from backend.services.legal_retrieval import article_context, requested_article_id
 
-class RAGEngine: # Because intialize one LightRAG including connecting it with database is very heavy, we use class method in order to maitain only one LightRAG engine
+class RAGEngine: # Initializing LightRAG and connecting to its database is expensive, so keep one shared engine.
     _instance = None
 
     @classmethod
@@ -36,6 +37,7 @@ class RAGEngine: # Because intialize one LightRAG including connecting it with d
                 graph_storage="PGGraphStorage",
                 doc_status_storage="PGDocStatusStorage",
                 entity_extraction_use_json=True,
+                max_graph_nodes=5000,
 
                 # Pass the guidance strings to the LightRAG instance
                 addon_params={
@@ -53,3 +55,13 @@ class RAGEngine: # Because intialize one LightRAG including connecting it with d
         if cls._instance is None: 
             return RuntimeError("RAGEngine not initialized. Call RAGEngine.initialize() first.")
         return cls._instance
+
+    @classmethod
+    async def query_context(cls, query, param):
+        rag = cls.get_instance()
+        article_id = requested_article_id(query)
+        if article_id:
+            status = await rag.doc_status.get_by_id(article_id)
+            document = await rag.full_docs.get_by_id(article_id) if status and status.get('status') == 'processed' else None
+            return article_context(article_id, document.get('content') if document else None)
+        return await rag.aquery(query=query, param=param)

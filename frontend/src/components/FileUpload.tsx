@@ -33,7 +33,7 @@ export default function FileUpload({ onSuccess }: FileUploadProps) {
         },
       })
       setStatus('success')
-      const proposalsCount = response.data.proposals_count || 0
+      const proposalsCount = response.data.proposals?.length ?? 0
       const proposalMsg = proposalsCount > 0
         ? ` ${proposalsCount} conflict(s) detected — review in HITL panel.`
         : ''
@@ -52,7 +52,7 @@ export default function FileUpload({ onSuccess }: FileUploadProps) {
         <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed rounded-xl cursor-pointer hover:bg-muted/50 transition-colors group">
           <div className="flex flex-col items-center justify-center pt-5 pb-6">
             <Upload className="w-6 h-6 text-muted-foreground group-hover:text-primary transition-colors mb-2" />
-            <p className="text-xs text-muted-foreground font-medium">Click to upload DOCX files</p>
+            <p className="text-xs text-muted-foreground font-medium">Chọn tệp DOCX để tải lên</p>
           </div>
           <input 
             type="file" 

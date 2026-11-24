@@ -100,13 +100,13 @@ embed_text:
 
 
 ### -------------------------------------------------------------------------
-### extract_graph — BẮT BUỘC SỬA entity_types để khớp với LightRAG
+### extract_graph — entity types are loaded from the shared environment settings
 ### -------------------------------------------------------------------------
 
 extract_graph:
   completion_model_id: default_completion_model
   prompt: "prompts/extract_graph.txt"
-  entity_types: ${APP_ENTITY_TYPES}
+  entity_types: []                     # populated by GraphRAGEngine.initialize() from .env
   max_gleanings: 1                      # giữ =1, khớp behavior với LightRAG, tránh lệch số lần gọi LLM
 
 

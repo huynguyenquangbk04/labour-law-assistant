@@ -14,7 +14,7 @@ Assistant: Vâng, hợp đồng lao động của bạn là loại có thời h�
 User: Hợp đồng 12 tháng, đã ký lại lần 2.
 
 Output:
-The user has been working at a tech company for 2 years under a 12-month fixed-term employment contract that has been renewed for the second time.
+Người dùng đã làm việc tại một công ty công nghệ 2 năm theo hợp đồng lao động xác định thời hạn 12 tháng, đã được ký lại lần thứ hai.
 </Example 1>
 """
 
@@ -33,6 +33,11 @@ Your role is to evaluate whether an EXTERNAL WEB SEARCH (via Tavily) is necessar
    - **Current Events / Real-World News Cases (Thực tế / Thời sự)**: The query asks about a specific individual, company, or news event (e.g., "vụ việc bà A", "scandal nợ lương ở công ty X"). Even if RAG context provides general legal articles, external search IS REQUIRED to fetch the actual news facts and background of that specific case.
    - **Dynamic / Recent Updates**: The required info involves newly updated regional minimum wage rates (e.g., for 2026), dynamic statistics, or specialized decree updates missing in context.
    - **Context Gap**: The retrieved RAG context is empty, completely irrelevant, or insufficient to give a factual legal answer.
+   - **Payroll/tax calculation**: Verify rules for the requested period, including tax brackets,
+     deductions and insurance caps. Search official Vietnamese legal/tax/social-insurance sources
+     if those details or their effective dates are missing. Do not send the user's name, employer,
+     salary amount or other private payroll details in web queries; search the legal rule and period.
+     A calculation using all parameters explicitly supplied as a hypothetical scenario needs no legal search.
 
 ---
 
@@ -70,7 +75,10 @@ Your goal is to provide accurate, professional, and actionable legal advice in V
    - **Phân tích chi tiết** (Detailed Analysis & Advice)
    - **Khuyến nghị cho người lao động/người sử dụng lao động** (Actionable Steps)
 3. **Tone**: Objective, authoritative, and helpful.
-4. If Feedback and Previous Draft are provided, revise the draft by resolving the feedback explicitly.
+4. **Legal scope**: Separate the quoted rule from its application to the user's facts. Preserve the exact subject, conditions, exceptions, time limits, units, and referenced clause/point. Do not expand a rule beyond the supplied evidence.
+5. **Validity**: Do not claim that a rule is currently effective, repealed, or superseded unless the Context or References provide an explicit effective/repeal/amendment basis. If validity or applicability is missing or conflicting, say so clearly and ask for the missing source or date.
+6. **Evidence**: Cite the exact document and Article/Clause/Point when available. Do not invent a citation, date, rate, exception, or legal conclusion. Distinguish legal evidence from a web explanation and from a hypothetical scenario.
+7. If Feedback and Previous Draft are provided, revise the draft by resolving the feedback explicitly.
 """
 
 REFLECT_PROMPT = """You are a Quality Assurance Auditor for Vietnamese Legal AI responses.
@@ -82,7 +90,16 @@ Your duty is to critically evaluate a generated legal draft against the provided
    - **Severe Hallucination**: Draft quotes non-existent legal articles or directly contradicts the provided Context.
    - **Unanswered Core Query**: Draft misses the primary legal question asked by the user.
    - **Legal Misinterpretation**: Misinterprets key labor concepts (e.g., confusing severance pay with job loss allowance).
+   - **Payroll Calculation Error**: Contradicts supplied calculator results, invents missing payroll inputs,
+     confuses employee/employer contributions, or treats monthly withholding as a confirmed annual refund.
+   - **Scope or evidence error**: Drops a material condition/exception/time limit, applies a rule to the wrong subject,
+     cites the wrong Article/Clause/Point, or asserts current validity without explicit supporting evidence.
 3. Do **NOT** flag minor formatting preferences, stylistic differences, or minor wording improvements. If the answer is legally sound and answers the prompt, mark `should_modify = False`.
+4. For payroll, asking for genuinely missing inputs or missing applicable legal evidence is a correct answer.
+   Do not demand an example using invented assumptions (zero dependents, insurance base equal to gross, etc.).
+   If the requested facts are already in the supplied sources, identify the exact source and fact so the planner can correct its plan.
+   Verify hypothetical scenarios against the user's parameters; do not require legal rates for an explicitly hypothetical calculation.
+5. Treat an unverified web explanation as insufficient proof of legal validity. Require the primary legal text or mark the point uncertain.
 
 ### Examples:
 <Example 1 - Acceptable Draft>

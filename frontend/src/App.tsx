@@ -1,13 +1,13 @@
 import { useState, useEffect } from 'react'
 import ChatInterface from './components/ChatInterface'
 import FileUpload from './components/FileUpload'
-import GraphViewer from './components/GraphViewer'
+import { GraphViewer } from './components/GraphViewer'
 import ProposalReviewer from './components/ProposalReviewer'
-import { Scale, Database, Shield, Share2, FileText, ExternalLink, Columns, AlertTriangle, Settings2, Sliders, Layers } from 'lucide-react'
+import { Scale, Database, Shield, Share2, FileText, ExternalLink, Columns, AlertTriangle, Sliders, Layers } from 'lucide-react'
 import client from './api/client'
 
 function App() {
-  const [dbStatus, setDbStatus] = useState<'connected' | 'disconnected'>('connected')
+  const [dbStatus] = useState<'connected' | 'disconnected'>('connected')
   const [documents, setDocuments] = useState<any[]>([])
   const [comparisonMode, setComparisonMode] = useState(false)
   const [critique, setCritique] = useState(false)
@@ -19,6 +19,7 @@ function App() {
   const [communityLevel, setCommunityLevel] = useState(2)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [showGraph, setShowGraph] = useState(false)
+  const [proposalRefreshKey, setProposalRefreshKey] = useState(0)
   
   const fetchDocuments = async () => {
     try {
@@ -44,7 +45,7 @@ function App() {
           <div className="p-2 bg-primary/10 rounded-lg">
             <Scale className="w-6 h-6 text-primary" />
           </div>
-          <h1 className="text-xl font-bold tracking-tight text-foreground">Law Assistant</h1>
+          <h1 className="text-xl font-bold tracking-tight text-foreground">Labour Law Assistant</h1>
         </div>
 
         <div className="space-y-6 flex-1 overflow-y-auto pr-2 scrollbar-thin">
@@ -252,7 +253,10 @@ function App() {
 
           <section>
             <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Knowledge Base</h2>
-            <FileUpload onSuccess={fetchDocuments} />
+            <FileUpload onSuccess={() => {
+              setProposalRefreshKey(current => current + 1)
+              fetchDocuments()
+            }} />
           </section>
 
           <section>
@@ -274,7 +278,7 @@ function App() {
               <AlertTriangle className="w-3 h-3" />
               Conflict Review (HITL)
             </h2>
-            <ProposalReviewer onUpdate={fetchDocuments} />
+            <ProposalReviewer refreshKey={proposalRefreshKey} onUpdate={fetchDocuments} />
           </section>
 
           <section>

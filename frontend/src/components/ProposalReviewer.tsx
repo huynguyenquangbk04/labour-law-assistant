@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { CheckCircle2, XCircle, AlertTriangle, ArrowRight, Loader2, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react'
+import { CheckCircle2, XCircle, ArrowRight, Loader2, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react'
 import client from '../api/client'
 
 interface Proposal {
@@ -20,6 +20,7 @@ interface Proposal {
 
 interface ProposalReviewerProps {
   onUpdate?: () => void
+  refreshKey?: number
 }
 
 const TYPE_COLORS: Record<string, string> = {
@@ -36,35 +37,39 @@ const TYPE_ICONS: Record<string, string> = {
   OVERLAPS: '⚠️',
 }
 
-export default function ProposalReviewer({ onUpdate }: ProposalReviewerProps) {
+export default function ProposalReviewer({ onUpdate, refreshKey = 0 }: ProposalReviewerProps) {
   const [proposals, setProposals] = useState<Proposal[]>([])
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [filter, setFilter] = useState<'pending' | 'all'>('pending')
+  const [refreshCount, setRefreshCount] = useState(0)
 
-  const fetchProposals = async () => {
-    try {
-      setLoading(true)
-      const params = filter === 'pending' ? { status: 'pending' } : {}
-      const response = await client.get('/proposals', { params })
-      setProposals(response.data)
-    } catch (error) {
-      console.error('Failed to fetch proposals:', error)
-    } finally {
-      setLoading(false)
-    }
-  }
+  const refreshProposals = () => setRefreshCount(current => current + 1)
 
   useEffect(() => {
+    const controller = new AbortController()
+    const fetchProposals = async () => {
+      try {
+        setLoading(true)
+        const params = filter === 'pending' ? { status: 'pending' } : {}
+        const response = await client.get<Proposal[]>('/proposals', { params, signal: controller.signal })
+        if (!controller.signal.aborted) setProposals(response.data)
+      } catch (error) {
+        if (!controller.signal.aborted) console.error('Failed to fetch proposals:', error)
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    }
     fetchProposals()
-  }, [filter])
+    return () => controller.abort()
+  }, [filter, refreshKey, refreshCount])
 
   const handleAction = async (id: string, action: 'approve' | 'reject') => {
     setActionLoading(id)
     try {
       await client.post(`/proposals/${id}/${action}`)
-      await fetchProposals()
+      refreshProposals()
       if (onUpdate) onUpdate()
     } catch (error) {
       console.error(`Failed to ${action} proposal:`, error)
@@ -118,7 +123,7 @@ export default function ProposalReviewer({ onUpdate }: ProposalReviewerProps) {
             All
           </button>
         </div>
-        <button onClick={fetchProposals} className="p-1 hover:bg-muted rounded-full">
+        <button onClick={refreshProposals} className="p-1 hover:bg-muted rounded-full">
           <RefreshCw className="w-3 h-3 text-muted-foreground" />
         </button>
       </div>
